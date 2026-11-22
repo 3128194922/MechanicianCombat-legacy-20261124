@@ -44,6 +44,16 @@ public class BowgunGunLayer extends GeoRenderLayer<BowgunRig> {
 	public void renderForBone(PoseStack poseStack, BowgunRig animatable, GeoBone bone, RenderType type,
 							  MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick,
 							  int packedLight, int packedOverlay) {
+        if (!TkGun.holdingGun(BowgunRig.CURRENT_PLAYER)) return;
+        if (BowgunEffectSkillLayer.isEffect(bone.getName())) return;
+        if (KineticSwordEnergyEffect.isEnergyBone(bone.getName())) return;
+        if (BowgunCloseCombatEffectLayer.isEffectBone(bone.getName())) return;
+        if ("skill_1".equals(bone.getName())) {
+            var state = com.mechaniciancombat.client.GunClientState.get(BowgunRig.CURRENT_PLAYER.getId());
+            if (state == null || !state.active() || (state.state != TkGun.State.FORTRESS_SKILL_LOAD
+                    && state.state != TkGun.State.FORTRESS_SKILL_READY_GATHER && state.state != TkGun.State.FORTRESS_SKILL_GATHER
+                    && state.state != TkGun.State.FORTRESS_SKILL_HIT)) return;
+        }
 		// 待机/收起时 fire 父骨的 scaleY = 0（特效平面被压平）；一旦它变成 1，说明**没有动画在跑**
 		// （骨骼被重置回 geo 初始值）—— 也就是用户看到的"枪卡在原位、粒子特效全摊出来"。
 		//
@@ -71,12 +81,14 @@ public class BowgunGunLayer extends GeoRenderLayer<BowgunRig> {
 		// 模型的阴影效果"）：改用**自发光（emissive）**那一层画 —— 不参与世界光照与法线明暗，
 		// 亮度恒定，夜里/背光处也是亮的，火焰不会再被"打暗"。
 		boolean flash = bone.getName().startsWith("fire")
-				|| bone.getName().startsWith("change5");
+				|| bone.getName().startsWith("change5")
+                || (GunVisual.abyssal() && "case".equals(bone.getName()));
+        ResourceLocation gunTexture = GunVisual.texture();
 		// 枪换一张贴图 → 换一个 buffer；下一个骨骼 GeckoLib 会自己把缓冲刷回来
 		// （GeoRenderer.checkAndRefreshBuffer 每根骨骼都会重新取）。
 		RenderType gunLayer = flash
-				? RenderType.entityTranslucentEmissive(TEX, false)
-				: this.renderer.getRenderType(animatable, TEX, bufferSource, partialTick);
+				? RenderType.entityTranslucentEmissive(gunTexture, false)
+				: this.renderer.getRenderType(animatable, gunTexture, bufferSource, partialTick);
 		VertexConsumer gunBuffer = bufferSource.getBuffer(gunLayer);
 		int light = flash
 				? net.minecraft.client.renderer.LightTexture.FULL_BRIGHT

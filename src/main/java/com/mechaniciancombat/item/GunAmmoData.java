@@ -19,10 +19,12 @@ public final class GunAmmoData {
 	private static final String MAG = "tkgun_mag";
 	private static final String MAG_AMMO = "tkgun_mag_ammo";
 	private static final String MAG_VERSION = "tkgun_mag_version";
+	private static final String MAG_TEMPLATE = "tkgun_mag_template";
 
 	public static ItemStack heldGun(Player player) {
 		ItemStack stack = player.getMainHandItem();
-		return TkGun.isGun(stack) ? stack : ItemStack.EMPTY;
+		// 动能剑是剑：没有弹仓、没有弹药环。
+		return TkGun.usesAmmoRing(stack) ? stack : ItemStack.EMPTY;
 	}
 
 	private static net.minecraft.core.RegistryAccess lookup(Player player) {
@@ -65,10 +67,29 @@ public final class GunAmmoData {
 	/** 把腰射弹匣的“已打掉发数 + 弹种”写回枪械 NBT，跨存档保留。 */
 	public static void saveMagazine(ItemStack gun, int mag, String ammoId) {
 		StackNbt.update(gun, custom -> {
+			if (!java.util.Objects.equals(custom.getString(MAG_AMMO), ammoId)) custom.remove(MAG_TEMPLATE);
 			custom.putInt(MAG, Math.max(0, mag));
 			custom.putString(MAG_AMMO, ammoId == null ? "" : ammoId);
 			custom.putInt(MAG_VERSION, 2);
 		});
+	}
+
+	public static void saveMagazine(ItemStack gun, int mag, String ammoId, ItemStack template) {
+		saveMagazine(gun, mag, ammoId);
+		StackNbt.update(gun, custom -> {
+			if (template == null || template.isEmpty() || !stackMatches(template, ammoId)) {
+				custom.remove(MAG_TEMPLATE);
+			} else {
+				custom.put(MAG_TEMPLATE, template.copyWithCount(1).save(new CompoundTag()));
+			}
+		});
+	}
+
+	public static ItemStack savedMagazineTemplate(ItemStack gun, String ammoId) {
+		CompoundTag custom = StackNbt.copy(gun);
+		if (!custom.contains(MAG_TEMPLATE, net.minecraft.nbt.Tag.TAG_COMPOUND)) return ItemStack.EMPTY;
+		ItemStack template = ItemStack.of(custom.getCompound(MAG_TEMPLATE));
+		return stackMatches(template, ammoId) && AmmoItems.isAmmo(template) ? template.copyWithCount(1) : ItemStack.EMPTY;
 	}
 
 	public static ItemStack selectedAmmo(Player player) {
@@ -242,6 +263,17 @@ public final class GunAmmoData {
 		save(gun, items, newSelected, lookup);
 		player.getInventory().setChanged();
 		return true;
+	}
+
+	/** Number of rounds of the selected type across all ammunition slots. */
+	public static int countExpected(Player player, String expectedId) {
+		ItemStack gun = heldGun(player);
+		if (gun.isEmpty() || expectedId == null || expectedId.isEmpty()) return 0;
+		int total = 0;
+		for (ItemStack stack : read(gun, lookup(player))) {
+			if (stackMatches(stack, expectedId)) total += stack.getCount();
+		}
+		return total;
 	}
 
 	private static int consumeFrom(NonNullList<ItemStack> items, int slot, String expectedId,

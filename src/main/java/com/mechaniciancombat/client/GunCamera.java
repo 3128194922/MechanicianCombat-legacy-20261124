@@ -60,9 +60,13 @@ public final class GunCamera {
 
 	/** 长按右键瞄准时的 FOV 系数（小于 1 = 视角放大；0.62 约等于 1.6 倍望远镜感）。 */
 	public static final float AIM_FOV = 0.62F;
+	/** 战旗施法时镜头拉远（1.18 = 视野变宽）。 */
+	public static final float BANNER_FOV = 1.18F;
 	/** FOV 平滑的时间常数（秒）：越小越快。0.09 秒左右跟手但不闪。 */
 	private static final double ZOOM_TAU = 0.09D;
+	private static final double BANNER_FOV_TAU = 0.14D;
 	private static float zoomBlend;
+	private static float bannerFovBlend;
 	/** Last FOV returned by GameRenderer, including aim zoom and vanilla effects. */
 	private static double renderedFovDegrees = 70.0D;
 
@@ -154,6 +158,7 @@ public final class GunCamera {
 
 	public static void resetVanillaState() {
 		zoomBlend = 0.0F;
+		bannerFovBlend = 0.0F;
 		crosshairPoint = null;
 		aimDir = null;
 		aimTarget = null;
@@ -204,7 +209,7 @@ public final class GunCamera {
 			if (AimTransitionRules.requiresRelease(aimDecoupledReason, currentDecoupledReason, rolling)) {
 				releaseAimUntilKeyUp = true;
 				if (p.isUsingItem() && p.getUsedItemHand() == net.minecraft.world.InteractionHand.MAIN_HAND
-						&& p.getUseItem().is(com.mechaniciancombat.TkGunServer.BOWGUN)) {
+						&& com.mechaniciancombat.TkGun.isGun(p.getUseItem())) {
 					p.releaseUsingItem();
 				}
 			} else {
@@ -218,7 +223,7 @@ public final class GunCamera {
 		if (!aimAllowed(client)) {
 			zoomBlend = 0.0F;
 			if (p.isUsingItem() && p.getUsedItemHand() == net.minecraft.world.InteractionHand.MAIN_HAND
-					&& p.getUseItem().is(com.mechaniciancombat.TkGunServer.BOWGUN)) {
+					&& com.mechaniciancombat.TkGun.isGun(p.getUseItem())) {
 				p.releaseUsingItem();
 			}
 		}
@@ -226,10 +231,20 @@ public final class GunCamera {
 		lookYaw = FallbackShoulderCamera.isFallbackActive(client) ? FallbackShoulderCamera.cameraYaw() : camera.getYRot();
 		lookPitch = FallbackShoulderCamera.isFallbackActive(client) ? FallbackShoulderCamera.cameraPitch() : camera.getXRot();
 		if (FallbackShoulderCamera.isFallbackActive(client)) { p.setXRot(lookPitch); p.xRotO = lookPitch; }
+		// 空格快速六连斩：身体朝向锁定，鼠标只转视角（与持枪待机一致）。
+		boolean kineticLocked = GunClientState.kineticComboLocksMovement(p.getId());
+		if (kineticLocked) {
+			float lockedYaw = GunClientState.kineticComboLockedYaw();
+			p.setSprinting(false);
+			p.setYRot(lockedYaw);
+			p.setYBodyRot(lockedYaw);
+			// 身体锁定，但头部跟随相机，保留 360° 环视。
+			p.setYHeadRot(lookYaw);
+			p.yRotO = lockedYaw;
+		}
 		boolean aiming = aiming(client);
-		// 正常情况下由 ShoulderSurfing 的耦合回调同步鼠标与身体朝向；
-		// 回调不可用时只补腰射 yaw，避免视角与 WASD 方向脱节。
-		if (!aiming && ShoulderCouplingState.shouldCoupleCamera(client)
+		// 腰射及蹲射按耦合规则同步身体；蹲射不依赖右键瞄准或移动输入。
+		if (!kineticLocked && (!aiming || focused(client)) && ShoulderCouplingState.shouldCoupleCamera(client)
 				) {
 			float yaw = Mth.wrapDegrees(lookYaw);
 			p.setYRot(yaw);
@@ -276,8 +291,7 @@ public final class GunCamera {
 		//    看着就是"从枪口横向飞出去"。
 		//    现在改成：**手持弩炮期间，身体一直跟着视角的水平方向转**（跟随时以准星点为目标），
 		//    速率见 TURN_AIM / AIM_SLEW_DEG_PER_TICK，两者都提到能跟住甩枪的量级。
-		//    （`updateAim` 这里传 true = 每 tick 都算准星点，身体才有目标可追；着弹点圈仍然只在
-		//      长按右键时才画，见 GunReticle；腰射的子弹方向仍取实测枪管方向，见 shotDirection。）
+		//    （`updateAim` 这里传 true = 每 tick 都算准星点，身体才有目标可追。）
 		updateAim(client, camera, true);
 		if (aimDir != null) {
 			// 长按右键：**整个模型转过去，让枪口真的对着落点**（用户 2026-10-15："长按右键的时候
@@ -408,7 +422,7 @@ public final class GunCamera {
 			if (action) {
 				p.yRotO = p.getYRot();
 			}
-			if (aiming && !action) {
+			if (!kineticLocked && aiming && !focused(client) && !action) {
 				float applied = aimYawTarget;
 				p.setYRot(applied);
 				p.setYBodyRot(applied);
@@ -617,6 +631,63 @@ public final class GunCamera {
 	}
 
 	/**
+	 * **HUD 落点圈用的弹着点**：必须和"这一枪实际会打哪"走同一条射线，否则圈会偏到枪管一侧。
+	 *
+	 * <p>以前这里按 {@code previousAimDir → aimDir} 做帧插值，只跟"炮塔方向"对齐 —— 但两条开火路径用的并不是它：
+	 * <ul>
+	 *   <li><b>瞄准</b>：{@link #shotDirection} = {@link #aimDir}（tick 权威值，不插值）；</li>
+	 *   <li><b>腰射</b>：{@link #directionToCrosshair} = 从枪口指向准星射线命中的那个点，**且不受 ±25° 扇区限制**。</li>
+	 * </ul>
+	 * 所以转身时插值会滞后一帧（圈在弹道右侧 → 看着"弹道偏左"），而枪管被动画拧到一侧、准星超出扇区时，
+	 * {@code aimDir} 会被夹在扇区边缘，腰射却照样打准星 —— 圈会系统性偏到枪管那一侧。
+	 *
+	 * <p>现在按当前状态取**同一条**方向再打射线：瞄准用 {@code aimDir}，腰射用枪口 → 准星的实测方向。
+	 * 代价是圈只按 20 Hz 的 tick 值移动（不再做帧插值），但这正是子弹实际使用的方向。
+	 */
+	public static Vec3 impactPointForRender(Minecraft client) {
+		if (client.level == null || client.player == null) return aimTarget;
+		// 严格镜像 TkGunClient#sendFirePacket 的取法，别在这里再自创一套方向。
+		//
+		// ⚠️ 分支条件必须和开火路径**完全一致**：开火用的是
+		// `focusish(id) || aiming(client)`（见 TkGunClient#tickMouse），
+		// 这里曾经只判 `aiming(client)`（= 右键按住）。蹲射（专注）时玩家并不按右键，
+		// 于是 HUD 走腰射分支（枪口 → 准星），子弹却走瞄准分支（`aimDir` 的 ±25° 扇区钳制），
+		// 两边方向不同 —— 表现就是"指示器和实际弹道对不上，特定情况下弹道更偏左"。
+		if (focusishForReticle(client)) {
+			Vec3 muzzle = TkGunClient.muzzleWorldPos();
+			// 直接复用开火用的 `shotDirection`，不再在这里自写一份
+			// "aimDir 优先、否则枪管"的取值 —— 那份曾经和 `shotDirection` 的条件不一致，
+			// 导致专注（不按右键）时圈和子弹用两条不同方向。
+			Vec3 dir = shotDirection(client);
+			return muzzle == null || dir == null ? aimTarget : cast(client, muzzle, dir);
+		}
+		Vec3 origin = hipFireOrigin(client);
+		if (origin == null) return aimTarget;
+		return cast(client, origin, directionToCrosshair(client, origin));
+	}
+
+	/** 与 {@code TkGunClient} 开火分支同一判据：专注镜像位 或 右键瞄准。 */
+	private static boolean focusishForReticle(Minecraft client) {
+		return ShotBranchRules.usesAimDirection(
+				GunClientState.focusish(client.player.getId()), aiming(client));
+	}
+
+	/**
+	 * 腰射的真实出膛点。与 {@code TkGunClient#fireHipImmediately} 共用同一份计算，
+	 * 保证指示器和开火包用的是同一个起点。
+	 */
+	static Vec3 hipFireOrigin(Minecraft client) {
+		Player p = client.player;
+		if (p == null) return null;
+		Vec3 muzzle = TkGunClient.muzzleWorldPos();
+		if (!p.isSprinting()) {
+			return muzzle != null ? muzzle : p.getEyePosition();
+		}
+		float yaw = Mth.wrapDegrees(client.gameRenderer.getMainCamera().getYRot());
+		return HipFireOrigin.select(true, p.position(), yaw, muzzle);
+	}
+
+	/**
 	 * **开火方向**：瞄准时 = {@link #aimDir}（从枪口指向"慢慢转过去"的那个落点，
 	 * 用户 2026-10-14："从 loc 的位置出来，然后去击中那个修改过的准星位置"）；
 	 * 没瞄准时 = 实测的枪管方向。
@@ -625,7 +696,18 @@ public final class GunCamera {
 	 * 所以"圈画在哪 = 子弹会打哪"。
 	 */
 	public static Vec3 shotDirection(Minecraft client) {
-		if (aiming(client) && aimDir != null) {
+		// ⚠️ 判据必须与开火分支、HUD 三者**完全一致**（`ShotBranchRules`）。
+		//
+		// 这里曾经写的是 `aiming(client) && aimDir != null` —— 只看右键。
+		// 但 `updateAim` 每 tick 都以 `true` 调用，`aimDir` 实际上**永不为 null**
+		// （它一直在朝准星缓慢转），于是专注里不按右键时：
+		//   * HUD 的瞄准分支用 `aimDir`（枪口 → 准星）；
+		//   * 子弹却因为 `aiming == false` 退回 `muzzleWorldDir()`（枪管原始朝向）。
+		// 枪在身体侧面，这两条方向差着枪口横向偏移那个角度 ——
+		// 表现就是用户报的"枪口指示器和实际弹道对不上，弹道更偏左"。
+		if (ShotBranchRules.usesAimDirection(
+				client.player != null && GunClientState.focusish(client.player.getId()),
+				aiming(client)) && aimDir != null) {
 			return aimDir;
 		}
 		return TkGunClient.muzzleWorldDir();
@@ -643,7 +725,7 @@ public final class GunCamera {
 		return delta.normalize();
 	}
 
-	/** 准星超出枪口左右 25° 扇区时，HUD 隐藏落点圈并显示方向箭头。 */
+	/** 准星超出枪口左右 25° 扇区时，HUD 显示方向箭头。 */
 	public static boolean aimOutsideCone() {
 		return aimOutsideCone;
 	}
@@ -690,12 +772,20 @@ public final class GunCamera {
 	 * 用真实帧时长做指数平滑，所以 60/144 Hz 都顺；按 tick（20 Hz）推进就是一卡一卡。
 	 */
 	public static void advanceZoom(Minecraft client, float frameTicks) {
+		boolean bannerCast = client.player != null
+				&& WarBannerSkillClientState.isActive(client.player.getId());
+		double dt = Math.max(1.0E-4D, frameTicks / 20.0D);
+		float bannerTarget = bannerCast ? 1.0F : 0.0F;
+		float bannerK = (float) (1.0D - Math.exp(-dt / BANNER_FOV_TAU));
+		bannerFovBlend += (bannerTarget - bannerFovBlend) * bannerK;
+		if (!bannerCast && bannerFovBlend < 1.0E-3F) {
+			bannerFovBlend = 0.0F;
+		}
 		if (!aimAllowed(client)) {
 			zoomBlend = 0.0F;
 			return;
 		}
 		float want = aiming(client) ? 1.0F : 0.0F;
-		double dt = Math.max(1.0E-4D, frameTicks / 20.0D);       // tick -> 秒
 		float k = (float) (1.0D - Math.exp(-dt / ZOOM_TAU));
 		zoomBlend += (want - zoomBlend) * k;
 		if (want == 0.0F && zoomBlend < 1.0E-3F) {
@@ -705,7 +795,9 @@ public final class GunCamera {
 
 	/** 当前 FOV 系数（1 = 不放大）。HUD 投影枪口时也读它，才和实际画面一致。 */
 	public static float fovScale() {
-		return 1.0F + (AIM_FOV - 1.0F) * zoomBlend;
+		float aimScale = 1.0F + (AIM_FOV - 1.0F) * zoomBlend;
+		float bannerScale = 1.0F + (BANNER_FOV - 1.0F) * bannerFovBlend;
+		return aimScale * bannerScale;
 	}
 
 	public static void recordRenderedFov(double degrees) {
@@ -730,6 +822,7 @@ public final class GunCamera {
 	 */
 	public static boolean aimAllowed(Minecraft client) {
 		return active(client) && !releaseAimUntilKeyUp
+				&& !TkGun.isKineticSword(client.player)
 				&& !GunClientState.aimLocked(client.player.getId());
 	}
 

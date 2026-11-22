@@ -115,7 +115,7 @@ public final class AmmoSwitchHud {
 
 	public static void tick(Minecraft client) {
 		if (client.player == null || client.level == null || client.screen != null
-				|| !TkGun.holdingGun(client.player)) {
+				|| !TkGun.usesAmmoRing(client.player)) {
 			reset();
 			return;
 		}
@@ -168,7 +168,7 @@ public final class AmmoSwitchHud {
 		Minecraft client = Minecraft.getInstance();
 		if (phase == Phase.HIDDEN || client.player == null || client.level == null
 				|| client.options.hideGui || client.screen != null
-				|| !TkGun.holdingGun(client.player)) {
+				|| !TkGun.usesAmmoRing(client.player)) {
 			return;
 		}
 

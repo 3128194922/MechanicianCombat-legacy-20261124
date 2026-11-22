@@ -47,6 +47,9 @@ public class MoltenTridentEntity extends ThrownTrident {
 	private static final EntityDataAccessor<Boolean> STOPPED =
 			SynchedEntityData.defineId(MoltenTridentEntity.class, EntityDataSerializers.BOOLEAN);
 	private final Set<UUID> tkgun$hitEntities = new HashSet<>();
+	/** 炮台弹：不落地拾取，命中即消失，超时自毁。 */
+	private UUID turretOwnerUuid;
+	private long turretExpireAt;
 
 	public MoltenTridentEntity(EntityType<? extends MoltenTridentEntity> type, Level world) {
 		super(type, world);
@@ -71,6 +74,16 @@ public class MoltenTridentEntity extends ThrownTrident {
 		return this.getEntityData().get(STOPPED);
 	}
 
+	/** 标记为狩猎炮台发射的弹药。 */
+	public void setTurretProjectile(ServerPlayer owner) {
+		turretOwnerUuid = owner.getUUID();
+		turretExpireAt = owner.level().getGameTime() + 200L;
+	}
+
+	public boolean isTurretProjectile() {
+		return turretOwnerUuid != null;
+	}
+
 	private void setStopped(boolean stopped) {
 		this.getEntityData().set(STOPPED, stopped);
 	}
@@ -90,6 +103,11 @@ public class MoltenTridentEntity extends ThrownTrident {
 		if (firstBlockHit) {
 			sendGunHitMarker();
 		}
+		if (isTurretProjectile()) {
+			// 炮台弹是消耗品：命中方块立即消失，不留下可拾取的实体。
+			discard();
+			return;
+		}
 		// 只在服务端判定一次；命中方块停止后 50% 消失，否则留在原地可拾取。
 		if (!level().isClientSide && level().random.nextFloat() < 0.5F) {
 			discard();
@@ -101,6 +119,10 @@ public class MoltenTridentEntity extends ThrownTrident {
 		Vec3 before = this.position();
 		super.tick();
 		if (this.level().isClientSide || this.isRemoved()) {
+			return;
+		}
+		if (isTurretProjectile() && this.level().getGameTime() >= turretExpireAt) {
+			discard();
 			return;
 		}
 		Vec3 after = this.position();

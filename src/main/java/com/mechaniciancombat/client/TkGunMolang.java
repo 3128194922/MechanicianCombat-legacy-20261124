@@ -27,6 +27,7 @@ public final class TkGunMolang {
 		MolangParser.INSTANCE.setValue("query.tkgun_body_x_rotation", probe("body_x", TkGunMolang::bodyXRotation));
 		MolangParser.INSTANCE.setValue("query.tkgun_head_y_rotation", probe("head_y", TkGunMolang::headYRotation));
 		MolangParser.INSTANCE.setValue("query.tkgun_body_y_rotation", probe("body_y", TkGunMolang::bodyYRotation));
+		installed = true;
 		TkGun.LOGGER.info("[tkgun] 已注册 rig 专用视角 Molang 变量");
 	}
 
@@ -56,7 +57,13 @@ public final class TkGunMolang {
 
 	private static double headXRotation() {
 		LivingEntity player = currentPlayer();
-		return player == null ? 0.0D : -net.minecraft.util.Mth.rotLerp(partialTick(), player.xRotO, player.getXRot());
+		if (player == null) return 0.0D;
+		Minecraft client = Minecraft.getInstance();
+		if (player == client.player && GunCamera.active(client)) {
+			// The shoulder camera can be decoupled from the player's rotation.
+			return -client.gameRenderer.getMainCamera().getXRot();
+		}
+		return -Mth.rotLerp(partialTick(), player.xRotO, player.getXRot());
 	}
 
 	private static double bodyXRotation() {

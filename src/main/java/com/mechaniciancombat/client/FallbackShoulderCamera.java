@@ -15,23 +15,18 @@ import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ClipContext;
 
 /**
- * Built-in shoulder camera used only when ShoulderSurfing is absent.
+ * Built-in shoulder camera used while holding the gun.
  *
  * <p>The camera owns a separate yaw/pitch pair. Mouse deltas update those
  * angles instead of the player's rotation, while {@link GunCamera} decides
  * when the body should follow the camera or track the crosshair.
  */
 public final class FallbackShoulderCamera {
-	private static final boolean SHOULDER_SURFING_INSTALLED =
-			net.minecraftforge.fml.ModList.get().isLoaded("shouldersurfing");
 	private static final double DEFAULT_DISTANCE = 3.2D;
-	private static final double DEFAULT_SIDE = 0.68D;
 	private static final double DEFAULT_HEIGHT = 0.18D;
 	private static final double AIM_DISTANCE = 2.35D;
-	private static final double AIM_SIDE = 0.52D;
 	private static final double AIM_HEIGHT = 0.12D;
 	private static final double ACTION_DISTANCE = 3.55D;
-	private static final double ACTION_SIDE = 0.58D;
 	private static final double ACTION_HEIGHT = 0.32D;
 	private static final double TRANSITION_SECONDS = 0.10D;
 	private static final double COLLISION_MARGIN = 0.15D;
@@ -41,7 +36,7 @@ public final class FallbackShoulderCamera {
 	private static final ShoulderCameraAngles ANGLES = new ShoulderCameraAngles(0, 0);
 	private static LocalPlayer cameraPlayer;
 	private static double distance = DEFAULT_DISTANCE;
-	private static double side = DEFAULT_SIDE;
+	private static double side;
 	private static double height = DEFAULT_HEIGHT;
 
 	public record Pose(Vec3 position, float yaw, float pitch) {
@@ -52,7 +47,7 @@ public final class FallbackShoulderCamera {
 	}
 
 	public static boolean usesFallback(Minecraft client) {
-		return !SHOULDER_SURFING_INSTALLED && isEligible(client);
+		return isEligible(client);
 	}
 
 	private static boolean isEligible(Minecraft client) {
@@ -75,14 +70,13 @@ public final class FallbackShoulderCamera {
 			cameraPlayer = client.player;
 			ANGLES.reset(client.player.getYRot(), client.player.getXRot());
 			distance = DEFAULT_DISTANCE;
-			side = DEFAULT_SIDE;
+			side = framingSide(client, DEFAULT_DISTANCE);
 			height = DEFAULT_HEIGHT;
 			initialized = true;
 		}
 		active = true;
 
 		double targetDistance = DEFAULT_DISTANCE;
-		double targetSide = DEFAULT_SIDE;
 		double targetHeight = DEFAULT_HEIGHT;
 		boolean aiming = GunCamera.aiming(client);
 		boolean focusing = GunClientState.focusish(client.player.getId());
@@ -93,20 +87,24 @@ public final class FallbackShoulderCamera {
 				|| state.state == TkGun.State.SLIDE_READY);
 		if (action) {
 			targetDistance = ACTION_DISTANCE;
-			targetSide = ACTION_SIDE;
 			targetHeight = ACTION_HEIGHT;
 		} else if (aiming || focusing) {
 			targetDistance = AIM_DISTANCE;
-			targetSide = AIM_SIDE;
 			targetHeight = AIM_HEIGHT;
 		}
 
+		double targetSide = framingSide(client, targetDistance);
 		double frameDelta = Math.min(0.25D,
 				Math.max(0.0D, client.getDeltaFrameTime() / 20.0D));
 		double blend = 1.0D - Math.exp(-frameDelta / TRANSITION_SECONDS);
 		distance += (targetDistance - distance) * blend;
 		side += (targetSide - side) * blend;
 		height += (targetHeight - height) * blend;
+	}
+
+	private static double framingSide(Minecraft client, double targetDistance) {
+		double aspect = (double) client.getWindow().getWidth() / Math.max(1, client.getWindow().getHeight());
+		return ShoulderFraming.sideOffset(targetDistance, GunCamera.renderedFovDegrees(), aspect);
 	}
 
 	/** Applies mouse deltas to the fallback camera and prevents vanilla body rotation. */
@@ -118,6 +116,14 @@ public final class FallbackShoulderCamera {
 		ANGLES.turn(deltaX, deltaY);
 		player.setYHeadRot(ANGLES.yaw());
 		player.setXRot(ANGLES.pitch());
+		// 空格快速六连斩：只转视角，不改变身体朝向。
+		if (GunClientState.kineticComboLocksMovement(player.getId())) {
+			float lockedYaw = GunClientState.kineticComboLockedYaw();
+			player.setYRot(lockedYaw);
+			player.setYBodyRot(lockedYaw);
+			player.yRotO = lockedYaw;
+			return true;
+		}
 		if (ShoulderCouplingState.shouldCoupleCamera(client)) {
 			player.setYRot(ANGLES.yaw());
 			player.setYBodyRot(ANGLES.yaw());
@@ -158,8 +164,9 @@ public final class FallbackShoulderCamera {
 			return null;
 		}
 
-		Vec3 look = Vec3.directionFromRotation(ANGLES.pitch(), ANGLES.yaw());
-		double yawRadians = Math.toRadians(ANGLES.yaw());
+		float renderYaw = ANGLES.renderYaw(tickDelta);
+		Vec3 look = Vec3.directionFromRotation(ANGLES.pitch(), renderYaw);
+		double yawRadians = Math.toRadians(renderYaw);
 		Vec3 right = new Vec3(-Math.cos(yawRadians), 0.0D, -Math.sin(yawRadians));
 		Vec3 interpolated = player.getPosition(tickDelta);
 		Vec3 eye = interpolated.add(0.0D, player.getEyeHeight(player.getPose()), 0.0D);
@@ -181,7 +188,7 @@ public final class FallbackShoulderCamera {
 			}
 		}
 
-		return new Pose(desired, ANGLES.yaw(), ANGLES.pitch());
+		return new Pose(desired, renderYaw, ANGLES.pitch());
 	}
 
 	public static void leave(Minecraft client) {
@@ -201,6 +208,14 @@ public final class FallbackShoulderCamera {
 
 	public static float cameraYaw() {
 		return ANGLES.yaw();
+	}
+
+	public static void steerSprintView(float yaw) {
+		if (active && initialized) ANGLES.steerTo(yaw);
+	}
+
+	public static void beginInputTick(Minecraft client) {
+		if (active && initialized && isEligible(client)) ANGLES.beginTick();
 	}
 
 	public static float cameraPitch() {

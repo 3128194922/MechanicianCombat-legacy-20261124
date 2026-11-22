@@ -37,7 +37,7 @@ public abstract class GameRendererZoomMixin {
 		if (scale < 0.999F) {
 			cir.setReturnValue(cir.getReturnValueD() * (double) scale);
 		}
-		GunCamera.recordRenderedFov(cir.getReturnValueD());
+		if (changingFov) GunCamera.recordRenderedFov(cir.getReturnValueD());
 	}
 
 	private static int frame;

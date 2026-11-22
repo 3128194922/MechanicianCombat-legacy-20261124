@@ -147,14 +147,32 @@ public final class TkGunCommand {
 				.then(Commands.literal("kit")
 						.then(Commands.argument("player", EntityArgument.player())
 								.executes(ctx -> {
-									ServerPlayer p = EntityArgument.getPlayer(ctx, "player");
-									p.getInventory().setItem(0, new ItemStack(TkGunServer.BOWGUN));
-									p.getInventory().setItem(1, new ItemStack(TkGunServer.BOLT, 64));
-									p.containerMenu.broadcastChanges();
-									ctx.getSource().sendSuccess(() -> Component.literal(
-											"tkgun: 已给 " + p.getName().getString() + " 发武器 + 64 箭"), false);
-									return 1;
-								})))
+									return grantKit(EntityArgument.getPlayer(ctx, "player"), TkGunServer.BOWGUN);
+								})
+								// /tkgun kit <player> <variant> —— 指定枪种。
+								// 蹲射 bug 只出现在 abyssal / veritas，验收时必须能单独发这两把，
+								// 否则只验到本来就没问题的 bowgun（2026-11-22 踩过）。
+								.then(Commands.argument("variant", com.mojang.brigadier.arguments.StringArgumentType.word())
+										.suggests((ctx, builder) -> {
+											builder.suggest("bowgun");
+											builder.suggest("abyssal_ancient_cannon");
+											builder.suggest("veritas_et_justitia");
+											return builder.buildFuture();
+										})
+										.executes(ctx -> grantKit(EntityArgument.getPlayer(ctx, "player"),
+												gunFor(com.mojang.brigadier.arguments.StringArgumentType
+														.getString(ctx, "variant")))))))
+				.then(Commands.literal("recipeeditor")
+						.executes(ctx -> {
+							ServerPlayer player = ctx.getSource().getPlayerOrException();
+							net.minecraftforge.network.NetworkHooks.openScreen(player,
+									new net.minecraft.world.SimpleMenuProvider(
+											(containerId, inventory, menuPlayer) ->
+													new com.mechaniciancombat.screen.RecipeEditorScreenHandler(
+															containerId, inventory),
+											Component.translatable("screen.tkgun.recipe_editor.title")));
+							return 1;
+						}))
 				// /tkgun demo <player> <on|off> —— 远程开关客户端的自动演示（自己按键跑全套动作并截图）
 				.then(Commands.literal("demo")
 						.then(Commands.argument("player", EntityArgument.player())
@@ -170,5 +188,63 @@ public final class TkGunCommand {
 	}
 
 	private TkGunCommand() {
+	}
+
+	/** 把枪种名字映射成物品（未知名字回落到 bowgun，并打一条 warn）。 */
+	private static net.minecraft.world.item.Item gunFor(String variant) {
+		if (variant != null) {
+			switch (variant) {
+				case "abyssal_ancient_cannon":
+					return com.mechaniciancombat.registry.ModRegistries.ABYSSAL_ANCIENT_CANNON.get();
+				case "veritas_et_justitia":
+					return com.mechaniciancombat.registry.ModRegistries.VERITAS_ET_JUSTITIA.get();
+				case "kinetic_sword":
+					return com.mechaniciancombat.registry.ModRegistries.KINETIC_SWORD.get();
+				case "bowgun":
+					break;
+				default:
+					TkGun.LOGGER.warn("[tkgun] kit: 未知枪种 {}，回落到 bowgun", variant);
+					break;
+			}
+		}
+		return TkGunServer.BOWGUN;
+	}
+
+	/**
+	 * 发放一套枪械验收装备并**让客户端真的拿在手上**。
+	 *
+	 * <p>三个步骤缺一不可（都踩过坑）：
+	 * <ol>
+	 *   <li>`setItem(0, ...)` —— 塞物品；</li>
+	 *   <li>`selected = 0` + `ClientboundSetCarriedItemPacket` —— 切选中槽位，
+	 *       否则玩家手上还是原来那一格（实测 `selected=8`），`holdingGun` 为 false；</li>
+	 *   <li>`broadcastFullState()` —— 把整套容器推给客户端，
+	 *       只改 Inventory 不会同步。</li>
+	 * </ol>
+	 */
+	private static int grantKit(ServerPlayer p, net.minecraft.world.item.Item gun) {
+		ItemStack stack = new ItemStack(gun);
+		// **弹药环必须一起初始化**：只给背包塞箭不够 —— 开火时服务端从枪的弹药环
+		// （`GunAmmoData` 的 NBT）取弹，环是空的就一直"空仓"静默拒绝，
+		// 表现是"扣了扳机但一发都没出"（2026-11-22 踩过：demo 跑了几千 tick 没有一次开火）。
+		net.minecraft.core.NonNullList<ItemStack> ring = net.minecraft.core.NonNullList
+				.withSize(com.mechaniciancombat.item.GunAmmoData.SIZE, ItemStack.EMPTY);
+		ring.set(0, new ItemStack(TkGunServer.BOLT, 64));
+		com.mechaniciancombat.item.GunAmmoData.save(stack, ring, 0, p.server.registryAccess());
+		p.getInventory().setItem(0, stack);
+		p.getInventory().setItem(1, new ItemStack(TkGunServer.BOLT, 64));
+		p.getInventory().selected = 0;
+		p.connection.send(
+				new net.minecraft.network.protocol.game.ClientboundSetCarriedItemPacket(0));
+		p.inventoryMenu.broadcastFullState();
+		if (p.containerMenu != p.inventoryMenu) {
+			p.containerMenu.broadcastChanges();
+		}
+		TkGun.LOGGER.info("[tkgun] kit: 槽0={} 槽1={} selected={} holdingGun={}",
+				p.getInventory().getItem(0).getItem(),
+				p.getInventory().getItem(1).getItem(),
+				p.getInventory().selected,
+				TkGun.holdingGun(p));
+		return 1;
 	}
 }

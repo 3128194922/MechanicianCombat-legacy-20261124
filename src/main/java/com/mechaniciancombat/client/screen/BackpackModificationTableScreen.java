@@ -123,6 +123,8 @@ public final class BackpackModificationTableScreen
 					leftPos + PREVIEW_CENTER_X + BACKPACK_OFFSET_X,
 					topPos + PREVIEW_Y + PREVIEW_HEIGHT / 2.0F
 							+ BACKPACK_OFFSET_Y,
+					// 1.20.1 GUI 正交投影为 near=1000 / far=21000，模型视图再平移 -11000，
+					// 因此这里的 z 只要不接近 0 就落在可见区间内（120 → 深度约 11120）。
 					120.0D);
 			matrices.scale(BACKPACK_SCALE, BACKPACK_SCALE, BACKPACK_SCALE);
 			// The authored GUI orientation is upside down for this item renderer.

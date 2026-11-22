@@ -29,12 +29,7 @@ import java.util.UUID;
 public final class GunStateMachine {
 	/** 翻滚之后的"加速冲刺"持续 tick（用户 2026-10-16："持续个 3 秒呗…相当于获得一个加速爆发冲刺"）。 */
 	public static final int DASH_TICKS = 60;
-	/**
-	 * 冲刺时的移速加成（乘算：**+50% 总移速**）。
-	 *
-	 * <p>2026-10-17 用户："将翻滚后的速度加成提升至 50%"（原来是 +30%）。
-	 */
-	public static final double DASH_SPEED_BONUS = 0.50D;
+	public static final int SLIDE_SPEED_BOOST_EXTENSION_TICKS = 40;
 	/** 两次闪避（翻滚/滑铲）间隔小于这个 tick = **连锁** → 之后闪避键失效。 */
 	public static final int DODGE_CHAIN_WINDOW = 40;
 	/**
@@ -47,8 +42,8 @@ public final class GunStateMachine {
 	public static final double ROLL_DETECT_SPEED = 0.55D;
 	/** 连锁之后闪避键失效的 tick。 */
 	public static final int DODGE_LOCK_TICKS = 60;
-	/** 冲刺加速用的属性修饰符 id（同一份，反复加/删）。 */
-	private static final UUID DASH_MODIFIER = UUID.fromString("b3f6d9a0-5225-4ac0-a6cc-5d1f39f66e60");
+	/** 翻滚奖励：原版“速度”效果等级与时长（3 秒）。 */
+	public static final int DASH_SPEED_AMPLIFIER = 1;
 	/** "散热期间跳不起来"用的属性修饰符 id（同一份，反复加/删）。 */
 	private static final UUID NO_JUMP_MODIFIER = UUID.fromString("994132e1-6d79-4c1c-a8d5-46f96b11ef05");
 
@@ -60,7 +55,7 @@ public final class GunStateMachine {
 	 */
 	public static boolean canFire(TkGun.State state) {
 		return switch (state) {
-			case ROLL, SLIDE, SLIDE_READY, OVERHEAT, RELOAD, OVER -> false;
+			case ROLL, SLIDE, SLIDE_READY, OVERHEAT, RELOAD, OVER, MELEE, SKILL_JUMP, FALL_ATTACK, FALL_ATTACK_RECOVERY, FORTRESS_SKILL_LOAD, FORTRESS_SKILL_READY_GATHER, FORTRESS_SKILL_GATHER, FORTRESS_SKILL_HIT -> false;
 			default -> true;          // Includes roll recovery: firing interrupts the transition.
 		};
 	}
@@ -106,31 +101,69 @@ public final class GunStateMachine {
 		}
 	}
 
-	/** 翻滚后的"加速冲刺"：`dashUntil` 之前给移速加成，过了就摘掉。 */
+	/**
+	 * 翻滚后的加速改为原版“速度”药水效果。
+	 *
+	 * <p>不再改写 {@code MOVEMENT_SPEED} 属性，也不强制疾跑：这样不会产生“硬直加速”，
+	 * 翻滚结束后玩家按 W 就是正常的药水加速移动。
+	 */
 	public static boolean tickDash(Player player, TkGunServer.PState st, long now) {
-		boolean want = now < st.dashUntil;
-		boolean syncChanged = want != st.dashSyncActive;
-		st.dashSyncActive = want;
-		AttributeInstance attr = player.getAttribute(Attributes.MOVEMENT_SPEED);
-		if (attr == null) {
-			return syncChanged;
-		}
-		boolean has = attr.getModifier(DASH_MODIFIER) != null;
-		if (want && !has) {
-			attr.addTransientModifier(new AttributeModifier(DASH_MODIFIER, "tkgun.roll_dash", DASH_SPEED_BONUS,
-					AttributeModifier.Operation.MULTIPLY_TOTAL));
-		} else if (!want && has) {
-			attr.removeModifier(DASH_MODIFIER);
+		boolean dashActive = now < st.dashUntil || now < st.speedBoostUntil;
+		boolean syncChanged = dashActive != st.dashSyncActive;
+		st.dashSyncActive = dashActive;
+		if (!dashActive) {
+			st.dodgeSpeedApplied = false;
 		}
 		return syncChanged;
 	}
 
-	/** 下线/收回枪时清干净（不然加速会留在身上）。 */
+	/** Extend only the movement bonus once for each completed slide. */
+	public static void extendSpeedBoostAfterSlide(ServerPlayer player, TkGunServer.PState st, long now) {
+		if (st.slideBoostApplied) return;
+		st.slideBoostApplied = true;
+		st.speedBoostUntil = Math.max(now, Math.max(st.dashUntil, st.speedBoostUntil))
+				+ SLIDE_SPEED_BOOST_EXTENSION_TICKS;
+		int duration = (int) Math.max(1L, st.speedBoostUntil - now);
+		player.addEffect(new net.minecraft.world.effect.MobEffectInstance(
+				net.minecraft.world.effect.MobEffects.MOVEMENT_SPEED,
+				duration, DASH_SPEED_AMPLIFIER,
+				false, true, true));
+		st.dodgeSpeedApplied = true;
+	}
+
+	/** 兼容旧调用：现在加速来自药水效果，这里只停止强制疾跑。 */
 	public static void clearDash(Player player) {
-		AttributeInstance attr = player.getAttribute(Attributes.MOVEMENT_SPEED);
-		if (attr != null && attr.getModifier(DASH_MODIFIER) != null) {
-			attr.removeModifier(DASH_MODIFIER);
+		if (player != null) {
+			player.setSprinting(false);
 		}
+	}
+
+	/** 收枪/进专注/切动作时清掉本次翻滚给的速度效果。 */
+	public static void clearDash(Player player, TkGunServer.PState st) {
+		if (player == null) {
+			return;
+		}
+		player.setSprinting(false);
+		if (st != null && st.dodgeSpeedApplied) {
+			net.minecraft.world.effect.MobEffectInstance effect =
+					player.getEffect(net.minecraft.world.effect.MobEffects.MOVEMENT_SPEED);
+			if (effect != null && effect.getAmplifier() == DASH_SPEED_AMPLIFIER) {
+				player.removeEffect(net.minecraft.world.effect.MobEffects.MOVEMENT_SPEED);
+			}
+			st.dodgeSpeedApplied = false;
+		}
+	}
+
+	/** 确认这次是后滚时，撤销可能已经发放的速度效果与加速窗口。 */
+	public static void cancelDodgeSpeed(ServerPlayer player, TkGunServer.PState st) {
+		st.dashUntil = 0L;
+		st.speedBoostUntil = 0L;
+		st.dashSyncActive = false;
+		if (st.dodgeSpeedApplied) {
+			player.removeEffect(net.minecraft.world.effect.MobEffects.MOVEMENT_SPEED);
+			st.dodgeSpeedApplied = false;
+		}
+		player.setSprinting(false);
 	}
 
 	/**
@@ -180,6 +213,8 @@ public final class GunStateMachine {
 	 */
 	public static boolean onDodgeStarted(ServerPlayer player, TkGunServer.PState st, long now,
 									 boolean roll) {
+		boolean backward = roll && st.rollRequestBackward;
+		st.rollRequestBackward = false;
 		// ⚠️ 同一次翻滚会**两次**走到这里：combat_roll 的事件 + 我们"翻滚键包"那条路（2026-10-25 补的）。
 		//    不加这道闸，第二次会被判成"连锁闪避"→ 反而给玩家套上 3 秒闪避锁（自己坑自己）。
 		if (st.lastDodgeAt == now) {
@@ -191,16 +226,33 @@ public final class GunStateMachine {
 		}
 		boolean chained = st.lastDodgeAt > 0 && now - st.lastDodgeAt <= DODGE_CHAIN_WINDOW;
 		st.lastDodgeAt = now;
+		st.speedBoostUntil = 0;
+		st.slideBoostApplied = false;
 		// **翻滚 / 滑铲交替循环**：1 = 刚翻滚（下次 Alt 走滑铲），2 = 刚滑铲（下次重新翻滚）。
 		st.lastDodgeKind = roll ? 1 : 2;
-		st.dashUntil = now + DASH_TICKS;
+		if (backward) {
+			// 后滚只保留位移：不给速度效果，也不开加速窗口（否则会被当成疾跑继续转向）。
+			st.dashUntil = 0L;
+			player.setSprinting(false);
+		} else {
+			st.dashUntil = now + DASH_TICKS;
+			player.addEffect(new net.minecraft.world.effect.MobEffectInstance(
+					net.minecraft.world.effect.MobEffects.MOVEMENT_SPEED,
+					DASH_TICKS, DASH_SPEED_AMPLIFIER, false, true, true));
+		}
 		if (chained) {
 			st.dodgeLockUntil = now + DODGE_LOCK_TICKS;
 			TkGun.LOGGER.info("[tkgun] 连锁闪避 -> 闪避键失效 {} tick 玩家={}", DODGE_LOCK_TICKS,
 					player.getName().getString());
 		}
-		TkGun.LOGGER.info("[tkgun] 闪避（{}）-> 加速冲刺 {} tick（+{}% 移速）玩家={}",
-				chained ? "连锁" : "单次", DASH_TICKS, (int) (DASH_SPEED_BONUS * 100), player.getName().getString());
+		if (backward) {
+			TkGun.LOGGER.info("[tkgun] 闪避（{}）-> 后滚，仅位移不给速度玩家={}",
+					chained ? "连锁" : "单次", player.getName().getString());
+		} else {
+			TkGun.LOGGER.info("[tkgun] 闪避（{}）-> 速度药水 {} tick（等级 {}）玩家={}",
+					chained ? "连锁" : "单次", DASH_TICKS, DASH_SPEED_AMPLIFIER + 1,
+					player.getName().getString());
+		}
 		return false;
 	}
 

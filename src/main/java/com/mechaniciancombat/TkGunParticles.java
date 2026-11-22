@@ -31,12 +31,17 @@ public final class TkGunParticles {
 	public static final SimpleParticleType CUTTING_EXPLO = ModRegistries.CUTTING_EXPLO.get();
 	/** Sculk-round impact effect (8 frames from 粒子/幽匿弹/sonic_boom.ase). */
 	public static final SimpleParticleType SONIC_BOOM = ModRegistries.SONIC_BOOM.get();
+    public static final SimpleParticleType THUNDER = ModRegistries.THUNDER.get();
 	/** Grapeshot pellet impact effect, six frames from grapeshot_explo.png. */
 	public static final SimpleParticleType GRAPESHOT_IMPACT = ModRegistries.GRAPESHOT_IMPACT.get();
 	/** Rose quartz impact effect, four frames from rose_quartz_explo.png. */
 	public static final SimpleParticleType ROSE_QUARTZ_IMPACT = ModRegistries.ROSE_QUARTZ_IMPACT.get();
 	/** Full-bright rose quartz guidance trail. */
 	public static final SimpleParticleType ROSE_QUARTZ_TRAIL = ModRegistries.ROSE_QUARTZ_TRAIL.get();
+	/** 战旗光环火花。 */
+	public static final SimpleParticleType WAR_BANNER_SPARK = ModRegistries.WAR_BANNER_SPARK.get();
+	/** 枢德之裁近战技能火花（`veritas` 的 `ATK_3_hold` / `ATK_hold_over` 关键帧）。 */
+	public static final SimpleParticleType SKILL_SPARK = ModRegistries.SKILL_SPARK.get();
 
 	public static final SimpleParticleType GOLEM_ENERGY_CONVERGE = ModRegistries.GOLEM_ENERGY_CONVERGE.get();
 

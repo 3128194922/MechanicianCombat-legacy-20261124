@@ -13,6 +13,7 @@ public final class OptionalMixinPlugin implements IMixinConfigPlugin {
     public String getRefMapperConfig() { return null; }
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
         if (mixinClassName.endsWith("CombatRollInputGuardMixin")) return installed("combatroll");
+        if (mixinClassName.endsWith("CombatRollAnimationGuardMixin")) return installed("combatroll");
         if (mixinClassName.endsWith("ShoulderSurfingCrosshairMixin")) return installed("shouldersurfing");
         return true;
     }

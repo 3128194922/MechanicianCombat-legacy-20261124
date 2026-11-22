@@ -490,7 +490,7 @@ public final class MoltenGolemEntity extends IronGolem implements GeoEntity, Own
 				position.x, position.y, position.z, getId(), scale, generation);
 	}
 
-	private Player getSummoner() {
+	public Player getSummoner() {
 		UUID ownerUuid = getOwnerUUID();
 		if (ownerUuid == null || !(level() instanceof ServerLevel serverWorld)) {
 			return null;
@@ -589,6 +589,11 @@ public final class MoltenGolemEntity extends IronGolem implements GeoEntity, Own
 		}
 		if (!level().isClientSide() && summonTicks > 0) {
 			return false;
+		}
+		if (!level().isClientSide() && source.getEntity() instanceof LivingEntity attacker
+				&& attacker.isAlive() && !attacker.isSpectator() && attacker != this
+				&& !CombatTargeting.isGolem(attacker) && !isAlliedTo(attacker)) {
+			setTarget(attacker);
 		}
 		return super.hurt(source, amount);
 	}

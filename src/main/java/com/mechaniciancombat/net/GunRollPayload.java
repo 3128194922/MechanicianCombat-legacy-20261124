@@ -6,21 +6,21 @@ import net.minecraft.network.FriendlyByteBuf;
 
 
 /**
- * 客户端 -> 服务端：**翻滚键按下了**（用户 2026-10-17："尝试将翻滚改为检测到输入翻滚按键时
- * 首先清空缓慢状态后并瞬间触发翻滚"）。
- *
- * <p>为什么要自己报一次：翻滚本身的位移/动画归 combat_roll，但它的事件只在"它自己真的滚起来"时
- * 才发；过热期间的"不可移动"阻尼 + 缓慢 10 会让它滚不起来 → 我们永远收不到事件、也就无从打断。
- * 这个包在**按键那一刻**就告诉服务端，于是可以：① 先清缓慢；② 过热 / `Focus_over` 里直接打断动画；
- * ③ 如果 combat_roll 这次没把玩家带走（速度还是很小），我们自己给一次冲刺 + 播我们的 `roll`。
+ * 客户端翻滚意图：按键方向和触发时玩家朝向。服务端校验输入后决定状态与位移；
+ * 可选 Combat Roll 未提供物理翻滚时，使用同一方向进行兜底。
  */
-public record GunRollPayload() implements ModPacket {
+public record GunRollPayload(int forward, int left, float yaw) implements ModPacket {
 	public static final PacketType<GunRollPayload> ID =
 			new PacketType<>(GunRollPayload.class, TkGun.id("roll_key"));
 
 	public static final PacketCodec<GunRollPayload> CODEC = PacketCodec.of(
-			(value, buf) -> { },
-			buf -> new GunRollPayload());
+			(value, buf) -> { buf.writeByte(value.forward); buf.writeByte(value.left); buf.writeFloat(value.yaw); },
+			buf -> new GunRollPayload(buf.readByte(), buf.readByte(), buf.readFloat()));
+
+	public boolean valid() {
+		return forward >= -1 && forward <= 1 && left >= -1 && left <= 1
+				&& Float.isFinite(yaw) && Math.abs(yaw) <= 36000.0F;
+	}
 
 	@Override
 	public PacketType<? extends ModPacket> getId() {

@@ -58,3 +58,37 @@
 
 【前端变前台，后端变后厨，python送到家，Java炒米粉】
 
+## 实机验收脚本（`-Ptkgun.demo`）使用要点
+
+`client/GunDebugHarness` 是隔离客户端里的自动演示/截图脚本，踩过的坑记录在此：
+
+1. **必须用 `-Ptkgun.demo=1`，不是 `-Dtkgun.demo=1`**。
+   Gradle 的 `-D` 只作用于 Gradle 进程本身，**不会**进入 `runClient` fork 出来的
+   Minecraft JVM —— 表现是"demo 一直没跑"，日志里连一行 `[tkgun-demo]` 都没有。
+   `build.gradle` 的 `client` run 已把 `tkgun.demo` 等属性转发给客户端 JVM。
+2. **先删 `validation/forge-47.4.28/dev-run/saves/<world>/session.lock`**。
+   上次客户端被强杀会留下锁文件，下次启动报
+   `Failed to read level ... data`（`IOException`），世界打不开、`client.player` 为 null，
+   demo 的 tick 直接 return。删除用 Python `pathlib.Path.unlink()`，`Remove-Item` 会被策略拦截。
+3. **`/tkgun kit` 必须同时把选中槽位切到 0**。
+   只 `setItem(0, ...)` 而玩家 `selected` 是别的格（实测 8）时，服务端看到的"主手"不是枪，
+   `holdingGun` 仍为 false，开火包被忽略。命令里已补 `selected = 0` + `ClientboundSetCarriedItemPacket`。
+4. **不要依赖第三方 HUD 模组的按键**。
+   进专注原来走 `pressHudSkillKey`（模拟外部 HUD 技能键），隔离客户端没有那个 mod，
+   按键永远找不到 → 整段 `Focus_*` 从未播放。现在直接发 `GunFocusPayload`。
+5. **专注里必须真的扣扳机**，否则只会看到 `Focus_ready → Focus_hold`，
+   永远没有 `Focus_shooting*`，蹲射"射击瞬间是否站起"就无从验收。
+6. **`/tkgun kit` 必须同时初始化枪的弹药环**（`GunAmmoData.save`）。
+   只把箭放进背包槽 1 是不够的：开火时服务端从**枪的 NBT 弹药环**取弹，
+   环是空的就一直"空仓"静默拒绝 —— 扣了扳机但一发不出，日志里也没有明显报错。
+   表现是 demo 跑了几千 tick、`rig ->` 里一次 `Focus_shooting` 都没有。
+7. **按枪种验收**：`-Ptkgun.demoGun=abyssal_ancient_cannon` / `veritas_et_justitia`。
+   蹲射 bug 只出现在这两把，只验默认的 `bowgun` 等于没验到问题所在。
+   世界是持久化的，上一轮留下的枪会让 `holdingGun` 一进世界就为 true；
+   demo 已改成"先按 `DEMO_GUN` 强制发一次再判断"，不要改回去。
+8. **`KeyMapping.setDown(true)` 不能模拟"按一下"**。原版 `handleKeybinds` 用的是
+   `consumeClick()`（按下边沿），`setDown` 不产生边沿，`Item#use` / 快捷栏切换
+   都不会发生。要真的触发就用 `client.gameMode.useItem(...)` 或直接发对应的 C2S 包。
+9. 演示世界是**持久化**的：上一次留下的实体（炮台、掉落物）会一直存在，
+   可能占住数量上限或干扰计数。演示开头该清的先清（`kill @e[type=...]`）。
+

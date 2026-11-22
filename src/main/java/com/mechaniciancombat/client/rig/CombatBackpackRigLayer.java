@@ -26,7 +26,7 @@ public final class CombatBackpackRigLayer extends GeoRenderLayer<BowgunRig> {
 			return;
 		}
 		Entity entity = ((BowgunRigRenderer) getRenderer()).getCurrentEntity();
-		if (!(entity instanceof AbstractClientPlayer player)) {
+		if (!(entity instanceof AbstractClientPlayer player) || !com.mechaniciancombat.TkGun.holdingGun(player)) {
 			return;
 		}
 		ItemStack stack = CombatBackpackItem.equippedStack(player);

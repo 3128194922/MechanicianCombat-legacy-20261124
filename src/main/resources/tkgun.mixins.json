@@ -9,7 +9,12 @@
     "BackpackLoyaltyPickupMixin",
     "TridentEntityAccessor",
     "OffhandSwapGuardMixin",
-    "OffhandPlacementGuardMixin"
+    "OffhandPlacementGuardMixin",
+    "PlayerFallDamageMixin",
+    "OffhandUseGuardMixin",
+    "GunCrouchPoseGuardMixin",
+    "MechanicianBrewingStandMixin",
+    "BrewingStandBlockEntityAccessor"
   ],
   "client": [
     "PlayerEntityRendererRigMixin",
@@ -24,13 +29,28 @@
     "GunTooltipScreenMixin",
     "GunTooltipBackgroundMixin",
     "CombatRollInputGuardMixin",
+    "CombatRollAnimationGuardMixin",
     "OffhandSwapGuardClientMixin",
     "OffhandStorageFirstPersonMixin",
     "OffhandStorageThirdPersonMixin",
     "FallbackShoulderCameraMixin",
     "FallbackShoulderMouseMixin",
     "FallbackShoulderRunMixin",
-    "ShoulderSurfingCrosshairMixin"
+    "ShoulderSurfingCrosshairMixin",
+    "GunMeleeAttackGuardMixin",
+    "MeleeInputFreezeMixin",
+    "MeleeCameraShakeMixin",
+    "MeleeEntityFreezeRenderMixin",
+    "ItemCooldownProgressMixin",
+    "GunVanillaAttackGuardMixin",
+    "OffhandUseGuardClientMixin",
+    "ClientPlayerCrouchGuardMixin",
+    "SoulAnchorFirstPersonMixin",
+    "KineticSwordFirstPersonMixin",
+    "WarBannerFirstPersonMixin",
+    "CombatPropFirstPersonMixin",
+    "BackpackMissileRenderMixin",
+    "EntityGlowColorMixin"
   ],
   "injectors": {
     "defaultRequire": 1

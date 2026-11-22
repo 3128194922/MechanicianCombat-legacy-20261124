@@ -54,7 +54,8 @@ public class BowgunItem extends Item {
 	@Override
 	public void appendHoverText(ItemStack stack, net.minecraft.world.level.Level context, List<Component> tooltip, TooltipFlag type) {
 		super.appendHoverText(stack, context, tooltip, type);
-		String description = Component.translatable("tooltip.tkgun.bowgun.description").getString();
+		String gunId = net.minecraftforge.registries.ForgeRegistries.ITEMS.getKey(stack.getItem()).getPath();
+		String description = Component.translatable("tooltip.tkgun." + gunId + ".description").getString();
 		for (String part : description.split("\\r?\\n|；|;")) {
 			String line = part.trim();
 			if (!line.isEmpty()) {

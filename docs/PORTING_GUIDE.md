@@ -99,7 +99,7 @@ MechanicianCombat/
 | GeckoLib 4.8.2 | 多处 GeoItem、GeoRenderer、骨架动画 | 使用已核查的 Forge 1.20.1 / 4.8.4，适配该版本 API |
 | Player Animation Lib | 原项目使用的前置；目标清单锁定 Forge `1.0.2-rc1+1.20` | 作为客户端前置驱动原版玩家模型；持枪身体姿势取自 GeckoLib 当前骨骼状态 |
 | Accessories / Curios API | 原背包直接继承 Accessories API；用户于 2026-10-26 明确批准替换为 Curios | 使用官方 Forge `5.11.1+1.20.1`；实现 Curios `ICurioItem`、`back` 槽、装备查询和 `ICurioRenderer`，验证完成前不标记运行通过 |
-| Shoulder Surfing Reloaded | 清单为必需，桥接代码有回退和反射 | 优先使用对应 Forge 版本；核对公开扩展 API，隔离到客户端 |
+| Shoulder Surfing Reloaded | 枪械使用内置相机；保留安装时视角切换兼容 | 不作为构建或运行前置；可选兼容采用反射隔离到客户端 |
 | Combat Roll | 清单为必需，服务端滚动事件与客户端输入 Mixin | 核对 Forge 版本事件及动作时序，保持翻滚/滑铲循环 |
 | owo-lib / Cloth Config / Forge Config API Port | 交接说明列为前置 | 以选定目标前置的元数据确认是否仍必需，不机械照搬 Fabric 列表 |
 | AzureLib | SOURCES 列为源 Combat Roll 依赖 | 仅在目标版本确实需要且用户批准时接入 |
@@ -229,5 +229,31 @@ MixinGradle 0.7.38 已获用户批准，仅作为构建期工具生成 refmap，
 - [Forge 客户端/服务端区分](https://docs.minecraftforge.net/en/1.20.x/concepts/sides/)
 - [Forge SimpleImpl 网络](https://docs.minecraftforge.net/en/1.20.x/networking/simpleimpl/)
 
-当前运行依赖为 Curios Forge `5.11.1+1.20.1`，运行时最低范围为 `[5.11.1+1.20.1,)`；精确验证文件与哈希见 [依赖锁记录](DEPENDENCIES.json)。Accessories beta46/beta45 的兼容记录仅作历史对照，不属于当前安装清单。六个第三方前置都按最低版本开放运行时范围；更高版本实际 API 兼容性尚未覆盖。
+当前必需的第三方运行前置为 GeckoLib、Curios 和客户端 PlayerAnimator；精确验证文件与哈希见 [依赖锁记录](DEPENDENCIES.json)。Combat Roll 是可选集成，但安装它时仍须满足其自身的 Cloth Config 和 PlayerAnimator 依赖。ShoulderSurfing 不再是构建或运行前置；其可选视角切换兼容仍需实机验证。Accessories 的兼容记录仅作历史对照。
+
+## 离线构建注意
+
+ForgeGradle 6 在插件应用阶段会联网检查 Maven 服务器；网络受限或代理不可用时构建会停在配置阶段。离线构建请加：
+
+```powershell
+./gradlew build --offline --no-daemon --console=plain -Dnet.minecraftforge.gradle.check.certs=false
+```
+
+## 模块 3：灵魂锚与动能剑
+
+r955 / r984 / r993 的灵魂锚与动能剑已按本地架构移植，细节、适配点与验证边界见
+[模块 3 移植记录](module3-soul-anchor-kinetic-2026-11-22.md)。
+
+- 灵魂锚以护甲模块 C3（胸甲）+ T1（护腿）解锁，与上游一致。
+- 动能剑已完整移植六段连击、双段 draft、三轮加速循环、冲刺 ATK_5、闪避冲刺奖励与专用跳跃曲线。
+- 新增契约任务：`verifySoulAnchorKineticAssets`。
+
+## 模块 4：装甲改装台 / 背包改装台 / 配方编辑器
+
+已移植护甲模块系统（C1/C2/C3/T1 物品与能力）、装甲改装台、背包改装台第三槽扩展
+（导弹舱 / 魔像空投舱）以及 `/tkgun recipeeditor` 三页配方编辑器（工作台/熔炉/酿造）。
+细节与验证边界见[模块 4 移植记录](module4-armor-backpack-recipe-2026-11-22.md)。
+
+- 新增契约任务：`verifyArmorModificationAssets`、`verifyRecipeEditor`。
+- 配方编辑器写入 `<world>/datapacks/tkgun_live` 并触发热重载；首次使用前请备份世界。
 

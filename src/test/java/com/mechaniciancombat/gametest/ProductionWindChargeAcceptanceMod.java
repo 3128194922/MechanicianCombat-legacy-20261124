@@ -1296,12 +1296,13 @@ public final class ProductionWindChargeAcceptanceMod {
         int shortRemaining = GunAmmoData.read(shortGun, level.registryAccess()).stream()
                 .filter(stack -> stack.getItem() == TkGunServer.BOLT)
                 .mapToInt(ItemStack::getCount).sum();
-        if (shortRemaining != TkGun.MAG_CAPACITY_HIP - 1
-                || shortState.reloadUntil > level.getGameTime()
-                || !shortState.magAmmo.isEmpty()) {
-            throw new AssertionError("insufficient reload consumed ammunition or started a partial magazine");
+        if (shortRemaining != 0 || shortState.mag != 1
+                || shortState.reloadUntil <= level.getGameTime()
+                || !shortState.magAmmo.equals(boltId)
+                || GunAmmoData.savedMagazineCount(shortGun) != 1) {
+            throw new AssertionError("partial reload must transfer the five available rounds and persist five loaded");
         }
-        System.out.println("[tkguntests] PASS: production hip reload consumed exactly six bolts into magazine NBT; insufficient ammo preserved all five and did not begin reload");
+        System.out.println("[tkguntests] PASS: production hip reload transferred six rounds when available and five when the reserve was short");
     }
 
     private static void verifyGunTriggerGates(ServerLevel level) {

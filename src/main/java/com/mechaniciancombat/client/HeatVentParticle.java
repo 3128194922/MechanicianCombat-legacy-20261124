@@ -40,6 +40,8 @@ public class HeatVentParticle extends TextureSheetParticle {
 	/** 寿命（tick）：作者源里 {@code max_lifetime: 1} = 1 秒 = 20 tick。 */
 	private static final int LIFETIME = 20;
 	private final SpriteSet provider;
+    private static volatile SpriteSet activeProvider;
+    private int attachedPlayerId = -1;
 
 	protected HeatVentParticle(ClientLevel world, double x, double y, double z,
 							   double vx, double vy, double vz, SpriteSet provider) {
@@ -71,8 +73,12 @@ public class HeatVentParticle extends TextureSheetParticle {
 	}
 
 	@Override
-	public void tick() {
-		super.tick();
+    public void tick() {
+        if (attachedPlayerId >= 0) {
+            var point=com.mechaniciancombat.client.rig.BowgunRigRenderer.locatorPosition(attachedPlayerId);
+            if (point!=null) setPos(point.x,point.y,point.z);
+        }
+        super.tick();
 		this.setSpriteFromAge(this.provider);
 		float life = (float) this.age / (float) this.lifetime;
 		this.setAlpha(1.0F - life);          // 越飘越淡
@@ -120,7 +126,15 @@ public class HeatVentParticle extends TextureSheetParticle {
 		vc.vertex(x, y, z).uv(u, v).color(red, green, blue, alpha).uv2(light).endVertex();
 	}
 
+    @Override protected int getLightColor(float partial) { return net.minecraft.client.renderer.LightTexture.FULL_BRIGHT; }
+    public static boolean spawnAttached(net.minecraft.world.entity.Entity player,net.minecraft.world.phys.Vec3 pos) {
+        var client=net.minecraft.client.Minecraft.getInstance(); var provider=activeProvider;
+        if (player==null || pos==null || client.level==null || provider==null) return false;
+        var particle=new HeatVentParticle(client.level,pos.x,pos.y,pos.z,0,.02D,0,provider);
+        particle.attachedPlayerId=player.getId(); client.particleEngine.add(particle); return true;
+    }
 	public record Factory(SpriteSet provider) implements ParticleProvider<SimpleParticleType> {
+        public Factory { activeProvider = provider; }
 		@Override
 		public HeatVentParticle createParticle(SimpleParticleType type, ClientLevel world,
 											   double x, double y, double z,

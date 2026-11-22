@@ -32,7 +32,7 @@ public final class BowgunPlayerAnimatorPose implements IAnimation {
 	private static final Map<Integer, PoseSnapshot> POSES = new ConcurrentHashMap<>();
 	private static net.minecraft.client.multiplayer.ClientLevel cachedLevel;
 	private static long lastPruneGameTime = Long.MIN_VALUE;
-	private static Map<String, Set<String>> animationChannels;
+	private static final Map<ResourceLocation, Map<String, Set<String>>> ANIMATION_CHANNELS = new HashMap<>();
 
 	private final AbstractClientPlayer player;
 
@@ -81,7 +81,8 @@ public final class BowgunPlayerAnimatorPose implements IAnimation {
 
 	@Override
 	public boolean isActive() {
-		return player.isAlive() && TkGun.holdingGun(player);
+		return player.isAlive() && (TkGun.holdingGun(player) || BowgunRigClient.renderArmorDodge(player)
+				|| com.mechaniciancombat.client.SoulAnchorSkillClientState.active(player.getId()));
 	}
 
 	@Override
@@ -207,9 +208,10 @@ public final class BowgunPlayerAnimatorPose implements IAnimation {
 	}
 
 	private static synchronized Map<String, Set<String>> channels() {
-		if (animationChannels != null) return animationChannels;
+        ResourceLocation resourceId = GunVisual.animation();
+        Map<String, Set<String>> cached = ANIMATION_CHANNELS.get(resourceId);
+        if (cached != null) return cached;
 		Map<String, Set<String>> parsed = new HashMap<>();
-		ResourceLocation resourceId = new ResourceLocation(TkGun.MOD_ID, "animations/entity/bowgun_rig.animation.json");
 		try (var resource = Minecraft.getInstance().getResourceManager().getResource(resourceId).orElseThrow().open();
 				var reader = new InputStreamReader(resource, StandardCharsets.UTF_8)) {
 			JsonObject animations = JsonParser.parseReader(reader).getAsJsonObject().getAsJsonObject("animations");
@@ -229,8 +231,9 @@ public final class BowgunPlayerAnimatorPose implements IAnimation {
 		} catch (Exception exception) {
 			TkGun.LOGGER.error("[tkgun] 读取 PlayerAnimator 姿势通道失败：{}", resourceId, exception);
 		}
-		animationChannels = Map.copyOf(parsed);
-		return animationChannels;
+        Map<String, Set<String>> result = Map.copyOf(parsed);
+        ANIMATION_CHANNELS.put(resourceId, result);
+        return result;
 	}
 
 	@Override

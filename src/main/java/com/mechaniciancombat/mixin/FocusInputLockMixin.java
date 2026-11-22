@@ -18,10 +18,17 @@ public abstract class FocusInputLockMixin {
 	@Inject(method = "handleKeybinds()V", at = @At("HEAD"), cancellable = true)
 	private void tkgun$lockFocusInput(CallbackInfo ci) {
 		Minecraft client = (Minecraft) (Object) this;
+		if (client.player != null && TkGun.holdingGun(client.player)
+				&& TkGunClient.isRollTriggerTick(client)) {
+			com.mechaniciancombat.client.SprintDirectionCorrection.prepareCombatRoll(client);
+		}
 		if (client.player != null && client.screen == null
 				&& TkGun.holdingGun(client.player)
 				&& GunClientState.focusish(client.player.getId())
 				&& !TkGunClient.isRollTriggerTick(client)) {
+			for (var hotbarKey : client.options.keyHotbarSlots) {
+				while (hotbarKey.consumeClick()) { }
+			}
 			TkGunClient.handleBackpackActionKey(client);
 			if (client.options.keyInventory.consumeClick()) {
 				client.setScreen(new InventoryScreen(client.player));

@@ -14,7 +14,8 @@ public final class GunCrosshairEvents {
     @SubscribeEvent
     public static void beforeOverlay(RenderGuiOverlayEvent.Pre event) {
         var player = Minecraft.getInstance().player;
-        if (player != null && TkGun.holdingGun(player)
+        // 动能剑没有枪口圈；保留原版准星，否则手持剑时屏幕上没有任何准心。
+        if (player != null && TkGun.usesAmmoRing(player)
                 && event.getOverlay().id().equals(VanillaGuiOverlay.CROSSHAIR.id())) {
             event.setCanceled(true);
         }

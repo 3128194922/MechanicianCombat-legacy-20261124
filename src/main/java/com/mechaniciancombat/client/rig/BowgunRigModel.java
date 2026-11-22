@@ -19,6 +19,13 @@ public class BowgunRigModel extends DefaultedEntityGeoModel<BowgunRig> {
 	}
 
 	@Override
+    public ResourceLocation getModelResource(BowgunRig animatable, GeoRenderer<BowgunRig> renderer) { return GunVisual.model(); }
+    @Override
+    public ResourceLocation getModelResource(BowgunRig animatable) { return GunVisual.model(); }
+    @Override
+    public ResourceLocation getAnimationResource(BowgunRig animatable) { return GunVisual.animation(); }
+
+	@Override
 	public ResourceLocation getTextureResource(BowgunRig animatable, GeoRenderer<BowgunRig> renderer) {
 		if (renderer instanceof BowgunRigRenderer rig) {
 			AbstractClientPlayer player = rig.getCurrentEntity();

@@ -20,6 +20,7 @@ public final class MechanicianCombatMod {
         MinecraftForge.EVENT_BUS.addListener(BackpackFireworkSelfDamageHandler::onLivingHurt);
         MinecraftForge.EVENT_BUS.addListener(WindChargeFallProtection::onLivingTick);
         MinecraftForge.EVENT_BUS.addListener(WindChargeFallProtection::onLivingFall);
+        MinecraftForge.EVENT_BUS.addListener(TkGunServer::onSkillFall);
         modBus.addListener(this::commonSetup);
     }
 

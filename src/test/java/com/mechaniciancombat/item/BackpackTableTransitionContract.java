@@ -15,11 +15,16 @@ public final class BackpackTableTransitionContract {
 		com.mechaniciancombat.client.rig.ArmorModelAlignmentContract.main(args);
 		AmmoRingRulesContract.main(args);
 		com.mechaniciancombat.client.ShoulderCameraAnglesContract.main(args);
+		com.mechaniciancombat.client.ReticleLayoutContract.main(args);
+		com.mechaniciancombat.client.HipFireOriginContract.main(args);
 		com.mechaniciancombat.client.AimTransitionContract.main(args);
 		com.mechaniciancombat.client.ClientAimStateContract.main(args);
 		com.mechaniciancombat.client.HeatVentVertexContract.main(args);
 		com.mechaniciancombat.client.VentEmissionTrackerContract.main(args);
 		com.mechaniciancombat.client.GunPerspectiveGuardContract.main(args);
+		com.mechaniciancombat.RollDirectionContract.main(args);
+		try { com.mechaniciancombat.client.DodgeSprintControlContract.main(args); }
+		catch (Exception e) { throw new AssertionError("Dodge sprint control contract", e); }
 	}
 
 	private static void check(boolean condition, String message) {

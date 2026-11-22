@@ -4,10 +4,7 @@ import com.mechaniciancombat.TkGun;
 import net.minecraft.client.Minecraft;
 
 /**
- * ShoulderSurfing 的相机耦合策略。
- *
- * <p>腰射期间让 ShoulderSurfing 同步相机和玩家朝向；瞄准、专注及全身动作期间保留相机解耦，
- * 避免本模组的枪械姿态控制与 ShoulderSurfing 同时改写玩家朝向。
+ * 相机与玩家朝向的耦合策略。蹲射时身体直接跟随准心，翻滚和滑铲保持解耦。
  */
 public final class ShoulderCouplingState {
 	private static boolean registered;
@@ -36,15 +33,22 @@ public final class ShoulderCouplingState {
 			return client.options.getCameraType()
 					== net.minecraft.client.CameraType.THIRD_PERSON_BACK;
 		}
-		if (client.options.getCameraType() == net.minecraft.client.CameraType.THIRD_PERSON_FRONT
-				|| client.player.isUsingItem()) {
+        GunClientState.Entry skill = GunClientState.get(client.player.getId());
+        if (fortressCoupled(skill)) return true;
+        // 空格快速六连斩：相机与身体解耦，可 360° 环视但不改变身体朝向。
+        if (GunClientState.kineticComboLocksMovement(client.player.getId())) {
+            return false;
+        }
+        if (skill != null && skill.state == TkGun.State.MELEE) return !skill.meleeHoldOver;
+		if (client.options.getCameraType() == net.minecraft.client.CameraType.THIRD_PERSON_FRONT) {
 			return false;
 		}
 		int id = client.player.getId();
-		if (GunClientState.focusish(id)) {
-			return false;
-		}
 		GunClientState.Entry state = GunClientState.get(id);
+		if (GunClientState.focusish(id)) {
+			return focusFollowsCamera(true, state == null ? null : state.state);
+		}
+		if (client.player.isUsingItem()) return false;
 		if (state == null) {
 			return true;
 		}
@@ -52,9 +56,14 @@ public final class ShoulderCouplingState {
 				&& !TkGunClient.hasMovementInput(id)
 				&& !com.mechaniciancombat.client.rig.BowgunRig.recentUpperOperation(client.player)) return false;
 		return switch (state.state) {
-			case ROLL, ROLL_TO_IDLE, SLIDE, SLIDE_READY, OVERHEAT, OVER, INSPECT -> false;
+			case ROLL, ROLL_TO_IDLE, SLIDE, SLIDE_READY, OVERHEAT, OVER, INSPECT, SKILL_JUMP, FALL_ATTACK, FALL_ATTACK_RECOVERY -> false;
 			default -> true;
 		};
+	}
+
+	static boolean focusFollowsCamera(boolean focus, TkGun.State state) {
+		return focus && state != TkGun.State.ROLL && state != TkGun.State.ROLL_TO_IDLE
+				&& state != TkGun.State.SLIDE && state != TkGun.State.SLIDE_READY;
 	}
 
 	/**
@@ -76,11 +85,20 @@ public final class ShoulderCouplingState {
 			return 0;
 		}
 		int id = client.player.getId();
-		if (client.player.isSprinting() || GunClientState.dashing(id)) {
-			return client.player.isSprinting() ? 1 : 2;
+        GunClientState.Entry skill = GunClientState.get(id);
+        if (skill != null && skill.state == TkGun.State.FORTRESS_SKILL_HIT) return 17;
+        if (fortressCoupled(skill)) return 0;
+        // 空格快速六连斩：解耦视角（身体朝向锁定）。
+        if (GunClientState.kineticComboLocksMovement(id)) return 16;
+        if (skill != null && skill.state == TkGun.State.MELEE) return skill.meleeHoldOver ? 13 : 0;
+        if (skill != null && skill.state == TkGun.State.SKILL_JUMP) return 15;
+        if (skill != null && skill.state == TkGun.State.FALL_ATTACK) return 18;
+        if (skill != null && skill.state == TkGun.State.FALL_ATTACK_RECOVERY) return 19;
+		if (client.player.isSprinting()) {
+			return 1;
 		}
 		if (client.player.isUsingItem()
-				&& client.player.getUseItem().is(com.mechaniciancombat.TkGunServer.BOWGUN)) {
+				&& com.mechaniciancombat.TkGun.isGun(client.player.getUseItem())) {
 			return 12;
 		}
 		if (GunClientState.focusish(id)) {
@@ -102,6 +120,16 @@ public final class ShoulderCouplingState {
 		};
 	}
 
+    public static boolean isSprintDirectionActive(Minecraft client) {
+        if (client == null || client.player == null) return false;
+        boolean moving = client.options.keyUp.isDown() || client.options.keyDown.isDown()
+                || client.options.keyLeft.isDown() || client.options.keyRight.isDown();
+        return client.player.isSprinting() || (client.options.keySprint.isDown() && moving);
+    }
+    private static boolean fortressCoupled(GunClientState.Entry state) {
+        return state != null && (state.state == TkGun.State.FORTRESS_SKILL_LOAD
+                || state.state == TkGun.State.FORTRESS_SKILL_READY_GATHER || state.state == TkGun.State.FORTRESS_SKILL_GATHER);
+    }
 	private ShoulderCouplingState() {
 	}
 }

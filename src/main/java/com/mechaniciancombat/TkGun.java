@@ -17,7 +17,7 @@ public final class TkGun {
 	 * <p>为什么要它：进服日志里打出来，"是不是还在跑旧 jar / 客户端服务端是不是同一份"一眼就知道
 	 * （2026-10-17 排查时吃过一次亏：所有版本的启动日志长得一模一样）。
 	 */
-	public static final String BUILD = "r396-2026-10-26";
+	public static final String BUILD = "r994-forge-port";
 	/** Shared gain for backpack animation and target-mark feedback sounds. */
 	public static final float BACKPACK_SOUND_VOLUME = 0.5F;
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
@@ -56,7 +56,7 @@ public final class TkGun {
 		 */
 		AIM_ROLL(14),
 		/** 翻滚结束、玩家没有继续移动：播作者的 `roll_to_idle` 过渡，再回 IDLE。 */
-		ROLL_TO_IDLE(15);
+		ROLL_TO_IDLE(15), MELEE(16), SKILL_JUMP(17), FORTRESS_SKILL_LOAD(18), FORTRESS_SKILL_READY_GATHER(19), FORTRESS_SKILL_GATHER(20), FORTRESS_SKILL_HIT(21), FALL_ATTACK(22), FALL_ATTACK_RECOVERY(23);
 
 		public static boolean isAiming(State s) {
 			return s == AIM || s == AIM_FAST || s == AIM_ROLL || s == AIM_SLIDE
@@ -98,6 +98,122 @@ public final class TkGun {
 	 * 重算：`python tools\muzzle_offset_new.py`（它会把出伤帧一起打出来）。
 	 */
 	public static final int ATTACK_FRAME_TICKS = 1;
+	// ---- 枢德之裁近战时间轴（与作者动画长度对齐；r774 素材）----
+	/** ATK_3 主段在 0.75s 结束，之后若仍按住左键进入 ATK_3_hold 蓄力。 */
+	public static final int MELEE_ATK3_MAIN_END_TICK = (int) Math.ceil(0.75D * 20.0D);
+	/** ATK_3_hold 最长蓄力时间。 */
+	public static final int MELEE_ATK3_HOLD_MAX_TICKS = MELEE_ATK3_MAIN_END_TICK;
+	/** ATK_3_hold 多渲染一 tick，保留作者最后一帧姿势。 */
+	public static final int MELEE_ATK3_HOLD_RENDER_TICKS = MELEE_ATK3_HOLD_MAX_TICKS + 1;
+	/** 松开左键时至少蓄力这么久才进入 ATK_hold_over，否则接 ATK_4。 */
+	public static final int MELEE_ATK3_HOLD_RELEASE_TICKS = 10;
+	/** ATK_hold_over 收势（作者 0.375s）多渲染一 tick，保留最后一帧。 */
+	public static final int MELEE_HOLDOVER_RETURN_TICKS =
+			(int) Math.ceil(0.375D * 20.0D) + 1;
+	// ---- 战旗（r774）----
+	/** 战旗施法动作时长（作者动画 23 tick）。 */
+	public static final int WAR_BANNER_SKILL_TICKS = 23;
+	/** 战旗存在时间（300 tick）到期后的物品冷却：60 秒。 */
+	public static final int WAR_BANNER_COOLDOWN_TICKS = 20 * 60;
+	/** 战旗施法音效时间点（tick）。 */
+	public static final int[] WAR_BANNER_SOUND_TICKS = {1, 3, 17, 18};
+	public static final String[] WAR_BANNER_SOUND_KEYS = {
+			"skill_spark", "double_axe_swing01", "smash_air2", "double_axe_swing01"
+	};
+	// ---- 跳跃推进器（r774）----
+	/** 起跳后到可推进的等待 tick。 */
+	public static final int JUMP_BACKPACK_READY_TICKS = 5;
+	/** 起跳初速加成持续 tick。 */
+	public static final int JUMP_BACKPACK_START_BOOST_TICKS = 5;
+	public static final double JUMP_BACKPACK_START_SPEED_MULTIPLIER = 1.25D;
+	/** 落地/结束后到可再次起跳的 tick。 */
+	public static final int JUMP_BACKPACK_CLOSE_TICKS = 8;
+	public static final int JUMP_BACKPACK_ENERGY_MAX_PIXELS = 28;
+	public static final int JUMP_BACKPACK_ENERGY_STEP_PIXELS = 2;
+	public static final int JUMP_BACKPACK_ENERGY_DRAIN_TICKS = 5;
+	public static final int JUMP_BACKPACK_ENERGY_FALL_RECOVERY_TICKS = 20;
+	public static final int JUMP_BACKPACK_ENERGY_GROUND_RECOVERY_TICKS = 10;
+	public static final int JUMP_BACKPACK_ENERGY_EMPTY_RECOVERY_TICKS = 5;
+	public static final double JUMP_BACKPACK_BOOST_RISE = 0.15D;
+	public static final double JUMP_BACKPACK_FORWARD_SPEED = 0.75D;
+	public static final double JUMP_BACKPACK_MIN_START_RISE = 0.5D;
+	public static final double JUMP_BACKPACK_MAX_HEIGHT = 6.0D;
+	// ---- 动能剑（r955/r984/r993）----
+	/** 作者在 GS_ATK_* 动画里标的伤害帧（秒 × 20，转成 tick）。 */
+	public static final int[][] KINETIC_SWORD_DAMAGE_TICKS = {
+			{8}, {4}, {4}, {4}, {4}, {3, 10}
+	};
+	/** 六段攻击动作长度（tick），多留 1 tick 展示作者尾帧。 */
+	public static final int[] KINETIC_SWORD_ATTACK_TICKS = {16, 11, 11, 11, 11, 16};
+	/** ATK_2→3 / ATK_4→5 的安全连段切换点。 */
+	public static final int KINETIC_SWORD_QUICK_CHAIN_TICK = 8;
+	/** 加速循环 2-3-4-5 的三轮，之后由 ATK_6 收尾。 */
+	public static final int KINETIC_SWORD_CHAIN_ROUNDS = 3;
+	/** 每轮减少 0.4 秒（8 tick）：第 2 轮 3 tick、第 3 轮 1 tick。 */
+	public static final int KINETIC_SWORD_ROUND_REDUCTION_TICKS = 8;
+	/** 双段 draft 片段 0.75 秒，附 1 tick 尾帧与 2 tick 间隔。 */
+	public static final int KINETIC_SWORD_DRAFT_CLIP_TICKS = 16;
+	public static final int KINETIC_SWORD_DRAFT_GAP_TICKS = 2;
+	public static final int KINETIC_SWORD_DRAFT_TICKS =
+			KINETIC_SWORD_DRAFT_CLIP_TICKS + KINETIC_SWORD_DRAFT_GAP_TICKS;
+	/** GS_ATK_2-3_draft / GS_ATK_4-5_draft 的伤害帧。 */
+	public static final int[][] KINETIC_SWORD_DRAFT_DAMAGE_TICKS = {
+			{3, 10}, {4, 10}
+	};
+	/** 六段 back-idle 收势长度（0.5 秒）。 */
+	public static final int KINETIC_SWORD_BACK_IDLE_TICKS = 10;
+	public static final float KINETIC_SWORD_DAMAGE = 9.0F;
+	/** 冲刺蓄力 ATK_5：原速 11 tick，向前 2 格。 */
+	public static final int KINETIC_SWORD_ACCEL_ATTACK_TICKS = 11;
+	public static final int KINETIC_SWORD_ACCEL_MOVE_END_TICK = 10;
+	public static final double KINETIC_SWORD_ACCEL_DISTANCE = 2.0D;
+	/** 动能剑跳跃参数（按原版空气阻力调过：4 格高 / 6 格远）。 */
+	public static final double KINETIC_SWORD_JUMP_HORIZONTAL_SPEED = 0.485D;
+	public static final double KINETIC_SWORD_JUMP_VERTICAL_SPEED = 0.8032D;
+	public static final double KINETIC_SWORD_RUN_JUMP_HORIZONTAL_SPEED = 1.4267D;
+	public static final double KINETIC_SWORD_RUN_JUMP_VERTICAL_SPEED = 0.544852D;
+	public static final double KINETIC_SWORD_JUMP_FALL_FADE = 0.78D;
+	public static final int KINETIC_SWORD_JUMP_MAX_TICKS = 30;
+	// ---- 动能剑翻滚/滑铲连斩（本地玩法扩展）----
+	/** 连斩相对普通六段攻击的倍速：动作与伤害判定都按这个比例缩短。 */
+	public static final double KINETIC_SWORD_ROLL_COMBO_SPEED = 2.0D;
+	/** 六连斩期间总共向前位移的格数。 */
+	public static final double KINETIC_SWORD_ROLL_COMBO_DISTANCE = 6.0D;
+
+	/** 加速 2-5 循环里单段的实际状态长度。 */
+	public static int kineticSwordAttackTicks(int combo, int round) {
+		if (combo < 2 || combo > 5) {
+			return KINETIC_SWORD_ATTACK_TICKS[
+					Math.max(0, Math.min(KINETIC_SWORD_ATTACK_TICKS.length - 1, combo - 1))];
+		}
+		int clampedRound = Math.max(1, Math.min(KINETIC_SWORD_CHAIN_ROUNDS, round));
+		return Math.max(1, KINETIC_SWORD_ATTACK_TICKS[combo - 1]
+				- (clampedRound - 1) * KINETIC_SWORD_ROUND_REDUCTION_TICKS);
+	}
+
+	/** 连斩第 step 段的动作长度（原速 / 2）。 */
+	public static int kineticSwordRollComboAttackTicks(int step) {
+		int index = Math.max(0, Math.min(KINETIC_SWORD_ATTACK_TICKS.length - 1, step - 1));
+		return Math.max(2, (int) Math.round(
+				KINETIC_SWORD_ATTACK_TICKS[index] / KINETIC_SWORD_ROLL_COMBO_SPEED));
+	}
+
+	/** 连斩第 step 段第 index 个伤害帧（原速 / 2）。 */
+	public static int kineticSwordRollComboDamageTick(int step, int index) {
+		int stepIndex = Math.max(0, Math.min(KINETIC_SWORD_DAMAGE_TICKS.length - 1, step - 1));
+		int[] frames = KINETIC_SWORD_DAMAGE_TICKS[stepIndex];
+		int frameIndex = Math.max(0, Math.min(frames.length - 1, index));
+		return Math.max(1, (int) Math.round(frames[frameIndex] / KINETIC_SWORD_ROLL_COMBO_SPEED));
+	}
+
+	/** 连斩整段（六段）的总 tick 数。 */
+	public static int kineticSwordRollComboTotalTicks() {
+		int total = 0;
+		for (int step = 1; step <= KINETIC_SWORD_ATTACK_TICKS.length; step++) {
+			total += kineticSwordRollComboAttackTicks(step);
+		}
+		return total;
+	}
 	/**
 	 * 连发节奏：两发之间隔几 tick（每发都把该发动画从头播一遍 → 后坐/枪口焰/弹壳跟着重播）。
 	 * 12 tick = 0.6s 一发：动画前 0.208s 是四段枪口焰，0.6s 时弹壳正好甩到一半。
@@ -116,8 +232,19 @@ public final class TkGun {
 	 * 服务端随后的 AIM_HOLD 到了就直接 CONTINUE 保持在尾针上（用户 2026-10-13 的要求）。
 	 */
 	public static final int FIRE_TICKS = 30;
-	/** 专注射击姿势只保持 2 tick，之后切回 Focus_hold；站立射击仍使用 {@link #FIRE_TICKS}。 */
-	public static final int FOCUS_FIRE_TICKS = 2;
+	/**
+	 * **专注射击状态也必须覆盖整段 `Focus_shooting*`**。
+	 *
+	 * <p>曾经这里写的是 2 tick（"摆一下立刻回 Focus_hold"）。后果：状态在动画刚起手就结束，
+	 * 客户端那一帧的 `e.active()` 为 false，`pick()` 掉到兜底 → 播 `idle`；`pickUpper()` 同时给
+	 * `stand_shooting`。`idle` 的 `body.rotation` 是站立姿势（没有 `body.position.y = -8` 的蹲姿），
+	 * 表现就是"蹲着开一枪，人瞬间站起来一下"。`bowgun` 的 `Focus_shooting` 有 1.25s 尾段，
+	 * 观感上被动画本身盖住得不明显；`abyssal` / `veritas` 的片段更短，问题最明显。
+	 *
+	 * <p>现在与 {@link #FIRE_TICKS} 对齐：动画播完仍停在 FIRE，随后的 `AIM_HOLD` 直接
+	 * CONTINUE 保持尾帧，全程不会离开专注姿势。
+	 */
+	public static final int FOCUS_FIRE_TICKS = FIRE_TICKS;
 	/** 散热窗口：5s 里不能开火 / 装填 / 进专注，排汽白汽也在这段持续放。 */
 	public static final int OVERHEAT_TICKS = 100;
 	/**
@@ -169,6 +296,14 @@ public final class TkGun {
 	public static final float HEAT_MAX = 100.0F;
 	/** 非专注状态下每 tick 自然散热量；专注期间不自然冷却。 */
 	public static final float HEAT_COOL = 0.25F;
+
+	// ---- 动能剑立场（r1034 之后的本地玩法扩展）----
+	/** 立场开启时每秒增加的热量（1%/秒 = 0.05/tick）。 */
+	public static final float KINETIC_STANCE_HEAT_PER_TICK = 0.05F;
+	/** 立场开启时每命中一个有效实体增加的热量。 */
+	public static final float KINETIC_STANCE_HEAT_PER_HIT = 5.0F;
+	/** 立场关闭后每秒降低的热量（1%/秒 = 0.05/tick）。 */
+	public static final float KINETIC_STANCE_COOL_PER_TICK = 0.05F;
 	/**
 	 * ⚠️ 2026-10-14 用户："弹速也不够快，应该是**瞬间就到**，然后在目标地点产生爆炸，枪炮/机炮那种感觉"。
 	 * 所以从这里开始**没有飞行弹丸了**：开火 = 从枪口沿枪管方向打一条**射线**（hitscan），
@@ -368,6 +503,38 @@ public final class TkGun {
 	 * `tkgun:imp1`，**由服务端在命中点放** → 分发出去之后附近所有人都听得见。
 	 */
 	public static final ResourceLocation SND_IMPACT = id("imp1");
+	/** 枢德之裁近战：横扫、重劈、蓄力、空仓等作者音效。 */
+	public static final ResourceLocation SND_GLAIVE_SLASH2 = id("glaive_slash2");
+	public static final ResourceLocation SND_DOUBLE_AXE_SWING1 = id("double_axe_swing1");
+	public static final ResourceLocation SND_CLAYMORE_SWING = id("claymore_swing");
+	public static final ResourceLocation SND_ANCHOR_SLAM1 = id("anchor_slam1");
+	public static final ResourceLocation SND_SMASH_AIR1 = id("smash_air1");
+	public static final ResourceLocation SND_SMASH_GROUND4 = id("smash_ground4");
+	public static final ResourceLocation SND_SMASH_GROUND3 = id("smash_ground3");
+	public static final ResourceLocation SND_SMASH_GROUND2 = id("smash_ground2");
+	public static final ResourceLocation SND_SKILL_SPARK = id("skill_spark");
+	public static final ResourceLocation SND_SLASH = id("slash");
+	public static final ResourceLocation SND_SWORD_HEAT = id("sword_heat");
+	public static final ResourceLocation SND_CURRENT = id("current");
+	/** 枢德之裁 ATK_3 蓄力音（动画关键帧名 `1.mp3`）。 */
+	public static final ResourceLocation SND_VERITAS_MELEE_CHARGE = id("veritas_melee_charge");
+	/** 静谧风暴举枪/换弹专属音。 */
+	public static final ResourceLocation SND_TENDRIL_CLICKS4 = id("tendril_clicks_4");
+	public static final ResourceLocation SND_NEARBY_CLOSEST2 = id("nearby_closest_2");
+	/** 静谧风暴空仓音。 */
+	public static final ResourceLocation SND_HEARTBEAT2 = id("heartbeat_2");
+	/** 导弹舱冷发射机械声。 */
+	public static final ResourceLocation SND_MISSILE_COLD_LAUNCH = id("missile_cold_launch");
+	/** 猎矛/炮台机械音。 */
+	public static final ResourceLocation SND_HUNTER_MECH3 = id("hunter_mech3");
+	public static final ResourceLocation SND_HUNTER_MECH4 = id("hunter_mech4");
+	public static final ResourceLocation SND_HUNTER_BOLT = id("hunter_bolt");
+	public static final ResourceLocation SND_HUNTER_BOLT3 = id("hunter_bolt3");
+	/** 机械师底衣头盔展开/折叠音效。 */
+	public static final ResourceLocation SND_HELMET_STEAM_HISS = id("helmet_steam_hiss");
+	public static final ResourceLocation SND_HELMET_MECH5 = id("helmet_mech5");
+	public static final ResourceLocation SND_HELMET_MECH3 = id("helmet_mech3");
+	public static final ResourceLocation SND_HELMET_MECH2 = id("helmet_mech2");
 	public static final ResourceLocation SND_CUTTING1 = id("cutting1");
 	public static final ResourceLocation SND_EXPLOSION1 = id("explosion1");
 	public static final ResourceLocation SND_ROSE_QUARTZ_HIT = id("rose_quartz_hit");
@@ -377,6 +544,10 @@ public final class TkGun {
 	public static final ResourceLocation SND_SONIC_BOOM = id("sonic_boom");
 	/** 熔铁弩矢（三叉戟式弹药）开火声：素材 `枪击.ogg`。 */
 	public static final ResourceLocation SND_GUNSHOT = id("gunshot");
+	/** 灵魂锚投掷锁链音（作者 0.1667s 关键帧）。 */
+	public static final ResourceLocation SND_CHAIN = id("chain");
+	/** 动能剑重劈音。 */
+	public static final ResourceLocation SND_GREAT_SWORD_SLASH = id("great_sword_slash");
 
 	/**
 	 * **动画音效关键帧**里会出现的那几个名字 → 真音效（名字是导出脚本
@@ -400,7 +571,28 @@ public final class TkGun {
 			Map.entry("mag", new KeyframeSound(SND_MAG, 1.0F, 1.0F)),         // 弹匣.ogg
 			Map.entry("empty", new KeyframeSound(SND_DRY, 1.0F, 1.0F)),       // 空弹仓.ogg
 			Map.entry("roll", new KeyframeSound(SND_ROLL, 0.9F, 1.0F)),       // 翻滚.ogg
-			Map.entry("steam", new KeyframeSound(SND_VENT, 0.6F, 1.2F)));     // 滑铲摩擦
+			Map.entry("steam", new KeyframeSound(SND_VENT, 0.6F, 1.2F)),      // 滑铲摩擦
+			// ---- 枢德之裁近战（作者在动画 sound_effects 里埋的名字）----
+			Map.entry("glaive_slash02", new KeyframeSound(SND_GLAIVE_SLASH2, 1.0F, 1.0F)),
+			Map.entry("double_axe_swing01", new KeyframeSound(SND_DOUBLE_AXE_SWING1, 1.0F, 1.0F)),
+			Map.entry("claymore_swing", new KeyframeSound(SND_CLAYMORE_SWING, 1.0F, 1.0F)),
+			Map.entry("anchor_slam01", new KeyframeSound(SND_ANCHOR_SLAM1, 1.0F, 1.0F)),
+			Map.entry("smash_air1", new KeyframeSound(SND_SMASH_AIR1, 1.0F, 1.0F)),
+			Map.entry("smash_air2", new KeyframeSound(SND_SMASH_AIR1, 1.0F, 1.0F)),
+			Map.entry("smash_ground4", new KeyframeSound(SND_SMASH_GROUND4, 1.0F, 1.0F)),
+			Map.entry("smash_ground3", new KeyframeSound(SND_SMASH_GROUND3, 1.0F, 1.0F)),
+			Map.entry("smash_ground2", new KeyframeSound(SND_SMASH_GROUND2, 1.0F, 1.0F)),
+			Map.entry("skill_spark", new KeyframeSound(SND_SKILL_SPARK, 2.0F, 1.0F)),
+			Map.entry("slash", new KeyframeSound(SND_SLASH, 1.0F, 1.0F)),
+			Map.entry("current", new KeyframeSound(SND_CURRENT, 1.0F, 1.0F)),
+			Map.entry("imp1", new KeyframeSound(SND_IMPACT, 1.0F, 1.0F)),
+			Map.entry("1", new KeyframeSound(SND_SMASH_AIR1, 1.0F, 1.0F)),
+			Map.entry("1.mp3", new KeyframeSound(SND_VERITAS_MELEE_CHARGE, 1.0F, 1.0F)),
+			Map.entry("explosion1", new KeyframeSound(SND_EXPLOSION1, 1.0F, 1.0F)),
+			Map.entry("great_sword_slash", new KeyframeSound(SND_GREAT_SWORD_SLASH, 1.0F, 1.0F)),
+			// ---- 静谧风暴专属 ----
+			Map.entry("tendril_clicks_4", new KeyframeSound(SND_TENDRIL_CLICKS4, 1.0F, 1.0F)),
+			Map.entry("nearby_closest_2", new KeyframeSound(SND_NEARBY_CLOSEST2, 1.0F, 1.0F)));
 
 	/** 一个玩家**同一个 tick 里**最多让服务端放几声关键帧音（防改包刷屏；正常最多 2 声）。 */
 	public static final int KEYFRAME_SOUNDS_PER_TICK = 6;
@@ -420,6 +612,26 @@ public final class TkGun {
 
 	public static boolean holdingGun(Player player) {
 		return player != null && (isGun(player.getMainHandItem()) || isGun(player.getOffhandItem()));
+	}
+
+	/** 动能剑（近战型枪械）。 */
+	public static boolean isKineticSword(ItemStack stack) {
+		return !stack.isEmpty()
+				&& stack.getItem() instanceof com.mechaniciancombat.item.KineticSwordItem;
+	}
+
+	public static boolean isKineticSword(Player player) {
+		return player != null && (isKineticSword(player.getMainHandItem())
+				|| isKineticSword(player.getOffhandItem()));
+	}
+
+	/** 这把“枪械”是否使用八槽弹药环。动能剑是剑，不参与弹药与轮盘。 */
+	public static boolean usesAmmoRing(ItemStack stack) {
+		return isGun(stack) && !isKineticSword(stack);
+	}
+
+	public static boolean usesAmmoRing(Player player) {
+		return player != null && usesAmmoRing(player.getMainHandItem());
 	}
 
 	private TkGun() {

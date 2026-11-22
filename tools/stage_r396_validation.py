@@ -9,10 +9,12 @@ V=ROOT/'validation/r396';V.mkdir(parents=True,exist_ok=True)
 E=ROOT/'docs/evidence/r396-port'
 main=ROOT/'build/libs/MechanicianCombat-1.20.1-forge-0.2.0-r396-porting.jar'
 tests=ROOT/'build/libs/MechanicianCombat-1.20.1-forge-0.2.0-r396-porting-gametests.jar'
-deps=['geckolib-forge-1.20.1-4.8.4.jar','curios-forge-5.11.1+1.20.1.jar','cloth-config-11.1.136-forge.jar']
+deps=['geckolib-forge-1.20.1-4.8.4.jar','curios-forge-5.11.1+1.20.1.jar']
+client_deps=['player-animation-lib-forge-1.0.2-rc1+1.20.jar']
 for side in ['server','client-a','client-b']:
     dest=V/side/'mods';dest.mkdir(parents=True,exist_ok=True)
-    for src in [main]+[ROOT/'libs'/d for d in deps]: shutil.copyfile(src,dest/src.name)
+    required=deps + (client_deps if side != 'server' else [])
+    for src in [main]+[ROOT/'libs'/d for d in required]: shutil.copyfile(src,dest/src.name)
     if side!='server': shutil.copyfile(tests,dest/tests.name)
 server=V/'server'
 old=ROOT/'validation/forge-47.4.28/server-install'
@@ -58,4 +60,4 @@ for suffix,username in [('a','R396TestA'),('b','R396TestB')]:
 shutil.copyfile(E/'client-a-launch.json',original)
 dist=ROOT/'dist';dist.mkdir(exist_ok=True);shutil.copyfile(main,dist/main.name)
 (E/'candidate-sha256.txt').write_text(hashlib.sha256(main.read_bytes()).hexdigest()+'  '+main.name+'\n',encoding='utf-8')
-print('Staged isolated server and two clients with GeckoLib/Curios/Cloth Config; no Shoulder Surfing, PAL or Combat Roll.')
+print('Staged GeckoLib/Curios and client PlayerAnimator; existing files in validation mod folders are not removed.')

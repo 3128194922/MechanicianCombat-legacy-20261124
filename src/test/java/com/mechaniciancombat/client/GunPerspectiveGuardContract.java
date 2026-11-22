@@ -31,6 +31,16 @@ public final class GunPerspectiveGuardContract {
         check(shoulder.shoulder, "shoulder recovery must be retried");
         shoulderGuard.update(false, shoulder);
         check(shoulder.current.equals("first"), "shoulder recovery must retain the pre-gun view");
+
+        var builtIn = new BuiltInCamera();
+        var builtInGuard = new GunPerspectiveGuard<String>();
+        builtInGuard.update(true, builtIn);
+        check(!builtIn.external && builtIn.current.equals("back"), "gun uses built-in camera");
+        builtIn.external = true;
+        builtInGuard.update(true, builtIn);
+        check(!builtIn.external, "gun restores built-in camera if external view is selected");
+        builtInGuard.update(false, builtIn);
+        check(builtIn.external && builtIn.current.equals("back"), "releasing the gun restores the external view");
     }
     private static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
     private static final class FakeCamera implements GunPerspectiveGuard.Camera<String> {
@@ -48,6 +58,20 @@ public final class GunPerspectiveGuardContract {
         public void useBack() { current="back"; }
         public void leaveShoulder() { shoulder=false; }
         public void restore(String prior) { current=prior; }
+        public void onRelease() { }
+    }
+    private static final class BuiltInCamera implements GunPerspectiveGuard.Camera<String> {
+        String current = "back";
+        boolean external = true;
+        boolean prior;
+        public String current() { return current; }
+        public boolean enterShoulder() { prior = external; external = false; return false; }
+        public boolean isShoulder() { return false; }
+        public boolean ensureShoulder() { return false; }
+        public boolean isBack() { return current.equals("back") && !external; }
+        public void useBack() { external = false; current = "back"; }
+        public void leaveShoulder() { external = prior; }
+        public void restore(String previous) { current = previous; }
         public void onRelease() { }
     }
 }

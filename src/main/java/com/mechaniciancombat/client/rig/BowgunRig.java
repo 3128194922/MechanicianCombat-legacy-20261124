@@ -65,8 +65,23 @@ public final class BowgunRig implements GeoReplacedEntity {
 		// 就是给"腿在走路、上半身在开火"这种叠层用的 —— 2026-10-14 用户点名要的"移动开火"）。
 		// GeckoLib 4.8 的多控制器语义：下层给全身移动，上层只写上半身枪械动作，合并后保留移动射击。
 		registrar.add(new AnimationController<>(this, "upper", 0, this::pickUpper)
+                .setAnimationSpeedHandler(rig -> CURRENT_PLAYER != null && com.mechaniciancombat.client.MeleeImpactClientState.freezesAnimation(CURRENT_PLAYER.getId()) ? 0.0D : 1.0D)
 				// 上半身动画是从完整动画派生的，仍带有原动画的声音/timeline/粒子标记。
 				// 这些事件由主 rig 控制器或服务端处理；这里显式吸收，避免重复播放和日志刷屏。
+				.setSoundKeyframeHandler(event -> { })
+				.setCustomInstructionKeyframeHandler(event -> { })
+				.setParticleKeyframeHandler(event -> { }));
+		// **第三条：枪械子树的折叠/展开姿态**（上游 `gun_pose`）。
+		//
+		// 只有作者为它们单独写了 `open` / `close` 片段的两把枪走这条（`abyssal_ancient_cannon`
+		// 与 `veritas_et_justitia`）；`bowgun` 的动画资源里根本没有这两段，所以这里对它 STOP。
+		//
+		// 为什么必须有：这两把枪的 `Focus_ready` / `Focus_shooting*` 只驱动**躯干与四肢**，
+		// 枪本身（`gun` / `barrel` / `case` / `blade_*`）的正确位置由 `open`（架枪展开）与
+		// `close`（收起折叠）两段单独给出。缺这条时，架枪瞬间枪件仍停在 `idle` 的折叠姿态，
+		// 与蹲下的身体错位 —— 画面上就是"蹲射一开枪，人和枪的姿态对不上、像站起来一下"。
+		// 后注册的控制器按骨骼覆盖先注册的，所以它只写枪件骨骼，身体仍归 `rig` / `upper` 管。
+		registrar.add(new AnimationController<>(this, "gun_pose", 0, this::pickGunPose)
 				.setSoundKeyframeHandler(event -> { })
 				.setCustomInstructionKeyframeHandler(event -> { })
 				.setParticleKeyframeHandler(event -> { }));
@@ -108,11 +123,40 @@ public final class BowgunRig implements GeoReplacedEntity {
 		if (effect == null || player == null || player.level() == null) {
 			return;
 		}
+        if ("thunder".equals(effect) || "energy_converge".equals(effect) || "energy_xplo".equals(effect)) {
+            String anchor = event.getKeyframeData().getLocator();
+            var point = "aim".equals(anchor) ? BowgunRigRenderer.aimPosition(player.getId()) : BowgunRigRenderer.locatorPosition(player.getId());
+            if (point != null && (!"energy_converge".equals(effect)
+                    || !com.mechaniciancombat.client.EnergyParticle.spawnAttached(player,point,anchor)))
+                player.level().addParticle("thunder".equals(effect) ? TkGunParticles.THUNDER
+                        : "energy_converge".equals(effect) ? TkGunParticles.ENERGY_CONVERGE : TkGunParticles.ENERGY_XPLO,
+                        point.x, point.y, point.z, 0, 0, 0);
+            return;
+        }
+		// 枢德之裁近战技能火花：`veritas` 的 `ATK_3_hold`(0.5s, aim) 与
+		// `ATK_hold_over`(1.0s, locator) 埋了这组关键帧。
+		// 没有这个分支时 GeckoLib 只会打 "no keyframe handler"，重劈/蓄力没有火花。
+		if ("skill_spark".equals(effect)) {
+			String anchor = event.getKeyframeData().getLocator();
+			var point = "aim".equals(anchor)
+					? BowgunRigRenderer.aimPosition(player.getId())
+					: BowgunRigRenderer.locatorPosition(player.getId());
+			if (point != null) {
+				player.level().addParticle(TkGunParticles.SKILL_SPARK,
+						point.x, point.y, point.z, 0.0D, 0.0D, 0.0D);
+			}
+			return;
+		}
 		if ("particles".equals(effect)) {
 			net.minecraft.world.phys.Vec3 locator =
 					BowgunRigRenderer.locatorPosition(player.getId());
-			if (locator != null) {
-				player.level().addParticle(TkGunParticles.HEAT_VENT,
+            if (locator != null && player.getMainHandItem().is(com.mechaniciancombat.registry.ModRegistries.ABYSSAL_ANCIENT_CANNON.get())) {
+                com.mechaniciancombat.client.LocatorShriekBurst.start(player.getId(), locator);
+                return;
+            }
+            if (locator != null && player.getMainHandItem().is(com.mechaniciancombat.registry.ModRegistries.VERITAS_ET_JUSTITIA.get())) return;
+            if (locator != null) {
+                if (!com.mechaniciancombat.client.HeatVentParticle.spawnAttached(player, locator)) player.level().addParticle(TkGunParticles.HEAT_VENT,
 						locator.x, locator.y, locator.z, 0.0D, 0.02D, 0.0D);
 				TkGun.LOGGER.info("[tkgun] 动画粒子关键帧 -> locator（玩家 {}）",
 						player.getName().getString());
@@ -232,9 +276,37 @@ public final class BowgunRig implements GeoReplacedEntity {
 	/** 最近一次 pick 选的动画名 + 打日志用（验收"待机=idle / 部署快慢 / 开火"看客户端日志即可）。 */
 	private static String currentAnimationName = "-";
 
+	// ---------------------------------------------------------------- 动能剑跑动过渡桥（上游 r993/r994）
+	/**
+	 * 动能剑"起步 / 收步"的过渡窗口（客户端 tick 截止值）。
+	 *
+	 * <p>作者给这几段专门写了桥接动画：`idle_to_run`（起步）与 `GS_run_back-idle`（收步）。
+	 * 上游 r993/r994 用这两个窗口把它们接上，r994 又补了"近战/跳跃/落地收势时清掉残留窗口"，
+	 * 否则上一条控制器会把 `GS_run_back-idle` 重播到 `fall_back-idle` 上（落地瞬间弹回跑姿）。
+	 */
+	private int kineticRunTransitionUntil = -1;
+	private int kineticRunBackIdleUntil = -1;
+	private int kineticBackIdleShotSeq = Integer.MIN_VALUE;
+	private boolean kineticWasRunning;
+
+	/**
+	 * 动能剑的跳跃/落地收势只归主控制器管：清掉任何残留的"起步/收步"桥，
+	 * 免得上层控制器在 `fall_back-idle` 上又叠一遍 `GS_run_back-idle`。
+	 */
+	private void resetKineticRunAnimationBridges() {
+		kineticRunTransitionUntil = -1;
+		kineticRunBackIdleUntil = -1;
+		kineticWasRunning = false;
+	}
+
 	/** 当前 rig 控制器在播哪一段（渲染器判"这段要不要跟随视角"要用）。 */
 	public static String currentAnimation() {
 		return currentAnimationName;
+	}
+
+	/** Upper-body layer currently playing (null = the upper controller is stopped). */
+	public static String currentUpperAnimation() {
+		return upperName;
 	}
 
 	/** Animation layers affecting the current player's body in this GeckoLib render pass. */
@@ -278,6 +350,7 @@ public final class BowgunRig implements GeoReplacedEntity {
 		if (player == null) {
 			return 1.0D;
 		}
+        if (com.mechaniciancombat.client.MeleeImpactClientState.freezesAnimation(player.getId())) return 0.0D;
 		if (currentAnimationName != null && currentAnimationName.startsWith("walk_")) {
 			return TkGunClient.walkAnimationSpeed(player.getId());
 		}
@@ -323,7 +396,17 @@ public final class BowgunRig implements GeoReplacedEntity {
 	 * 这里跟 {@code e.elapsed <= 1} 对齐给一个新实例（同一份 RawAnimation 实例 GeckoLib 不会重播）。
 	 */
 	private PlayState pickUpper(AnimationState<BowgunRig> state) {
+		recoverStoppedController(state);
 		Entity entity = entityOf(state);
+		// 灵魂锚与动能剑由自己的全身动画接管，不能再叠枪械上半身。
+		if (entity != null && (com.mechaniciancombat.client.SoulAnchorSkillClientState
+				.active(entity.getId())
+				|| entity instanceof net.minecraft.world.entity.player.Player player
+				&& TkGun.isKineticSword(player))) {
+			upperName = null;
+			lastLoggedUpper = "-";
+			return PlayState.STOP;
+		}
 		String name = entity == null ? null : upperAnimationFor(entity);
 		// 诊断（用户 2026-10-17："蹲射结束 / 冲刺窗口 + 疾跑 + 装填时上半身换弹动作不完整"）：
 		// 换弹还没结束时上层就离开 `reload_upper` = 动画被切断。正常这段里名字应该一直是它。
@@ -381,6 +464,56 @@ public final class BowgunRig implements GeoReplacedEntity {
 
 	/** upper 控制器当前在播哪一段（换段才给新实例）。 */
 	private static String upperName;
+	/** `gun_pose` 控制器当前在播哪一段（换段才给新实例）。 */
+	private static String gunPoseName;
+
+	/**
+	 * **枪械子树的折叠 / 展开姿态**（对应上游 `BowgunRig#pickGunPose`）。
+	 *
+	 * <p>只服务 `abyssal_ancient_cannon` 与 `veritas_et_justitia` —— 作者的资源里只有这两把枪
+	 * 为枪身单独写了 `open`（架枪展开）与 `close`（收起折叠）两段。`bowgun` 没有这两段，
+	 * 它所有 `Focus_*` 片段自带完整枪件通道，所以这里直接 STOP，不做任何覆盖。
+	 *
+	 * <p>规则（与上游逐条一致）：
+	 * <ul>
+	 *   <li>`FIRE` —— STOP。`Focus_shooting*` 自己驱动完整枪件子树（含后坐），
+	 *       再叠一层静态姿态会把后坐盖掉；</li>
+	 *   <li>`abyssal` + `AIM_HOLD` —— STOP。它的 `Focus_hold` 已经是标准架枪姿态，
+	 *       再套 `open` 会把装配好的枪挪位；</li>
+	 *   <li>`veritas` + `AIM_HOLD` + 专注 —— `open`（保持刀刃展开）；</li>
+	 *   <li>`veritas` + 翻滚/滑铲 —— `open`（动作期间保持展开的刀身）；</li>
+	 *   <li>非专注、非举枪、且处于待机或闪避收势 —— `close`（折叠收起）；</li>
+	 *   <li>其余（举枪行走、换弹、进/退专注过门）—— STOP，沿用下层动画自带的枪件通道。</li>
+	 * </ul>
+	 */
+	private PlayState pickGunPose(AnimationState<BowgunRig> state) {
+		Entity entity = entityOf(state);
+		if (!(entity instanceof net.minecraft.world.entity.player.Player)) {
+			return stopGunPose();
+		}
+		GunClientState.Entry e = GunClientState.get(entity.getId());
+		if (e == null) {
+			return stopGunPose();
+		}
+		// 判定本身抽在 GunPoseRules 里（纯函数），这样契约能穷举"枪种 × 状态 × 专注 × 举枪"。
+		String clip = GunPoseRules.select(GunVisual.variantName(), e.state, e.active(), e.focus,
+				GunClientState.focusish(entity.getId()), holdingGunUp(entity));
+		return clip == null ? stopGunPose() : playGunPose(state, clip);
+	}
+
+	private static PlayState playGunPose(AnimationState<BowgunRig> state, String name) {
+		if (!name.equals(gunPoseName)) {
+			gunPoseName = name;
+			state.getController().forceAnimationReset();
+		}
+		return state.setAndContinue(rawFor(name));
+	}
+
+	private static PlayState stopGunPose() {
+		gunPoseName = null;
+		return PlayState.STOP;
+	}
+
 	/** 本次装填用不用"只叠上半身"（**装填开始那一刻**定死，避免中途切换导致动画重播）。 */
 	/** 上面这个值本轮装填定过没有（装填结束时清掉，下一次重新判定）。 */
 
@@ -471,6 +604,29 @@ public final class BowgunRig implements GeoReplacedEntity {
 		if (e == null) {
 			return null;
 		}
+        if (e.airborneIdle) return null;
+        if (e.active()) {
+            switch (e.state) {
+                case MELEE:
+                    if (e.meleeDash || e.meleeDashReturn) return null;
+                    String name = e.meleeReturning ? "ATK_" + e.shotIndex + "_to_idle"
+                            : e.meleeHoldOver ? "ATK_hold_over"
+                            : e.shotIndex == 3 && e.elapsed >= TkGun.MELEE_ATK3_MAIN_END_TICK
+                                    ? "ATK_3_hold" : "ATK_" + e.shotIndex;
+                    // ATK_hold_over 结束后用作者专门的收势，不要套普通 ATK4 收势。
+                    if (e.meleeReturning && e.shotIndex == 4
+                            && e.total == TkGun.MELEE_HOLDOVER_RETURN_TICKS) {
+                        name = "ATK_holdover_to_idle";
+                    }
+                    return (name.equals("ATK_1") || name.equals("ATK_1_to_idle")) ? name + "_upper" : name;
+                case SKILL_JUMP, FALL_ATTACK, FALL_ATTACK_RECOVERY: return null;
+                case FORTRESS_SKILL_LOAD: return "skill_load_upper";
+                case FORTRESS_SKILL_READY_GATHER: return "ready_gather_upper";
+                case FORTRESS_SKILL_GATHER: return "gather_upper";
+                case FORTRESS_SKILL_HIT: return "hit_upper";
+                default: break;
+            }
+        }
 		boolean firing = e.active() && e.state == TkGun.State.FIRE;
 		// 翻滚回待机时如果人已经在移动，收势只占上半身；腿继续走 `*_lower`，不跟着
 		// `roll_to_idle` 站定。静止时仍用作者的完整 `roll_to_idle`。
@@ -636,6 +792,38 @@ public final class BowgunRig implements GeoReplacedEntity {
 	private static final Set<String> WALK_ANIMS = Set.of(
 			"walk_front", "walk_back", "walk_left", "walk_right", "run");
 
+	/** 作者为这些近战段提供了 `*_lower`（只有 body + 两条腿）派生动画。 */
+	private static final Set<String> MELEE_LOWER_BASES = Set.of(
+			"ATK_2", "ATK_2_to_idle",
+			"ATK_3", "ATK_3_to_idle",
+			"ATK_4", "ATK_4_to_idle",
+			"ATK_hold_over", "ATK_holdover_to_idle");
+
+	/**
+	 * 近战期间腿该播哪一段。
+	 *
+	 * <p>以前统一退回 {@code walkOrIdleLower}，ATK_2/3/4 自己的腿部动作就被走路腿盖掉了；
+	 * r774 给这几段生成了 `*_lower`，这里优先用它们。
+	 * ATK_3_hold 本身没有腿部通道，保持 ATK_3 的腿姿势直到蓄力结束。
+	 */
+	private static String meleeLowerAnimation(GunClientState.Entry entry) {
+		if (entry == null) return "idle_lower";
+		String base;
+		if (entry.meleeReturning) {
+			base = entry.shotIndex == 4 && entry.total == TkGun.MELEE_HOLDOVER_RETURN_TICKS
+					? "ATK_holdover_to_idle"
+					: "ATK_" + entry.shotIndex + "_to_idle";
+		} else if (entry.meleeHoldOver) {
+			base = "ATK_hold_over";
+		} else if (entry.shotIndex == 3 && entry.elapsed >= TkGun.MELEE_ATK3_MAIN_END_TICK) {
+			base = "ATK_3";
+		} else {
+			base = "ATK_" + entry.shotIndex;
+		}
+		if (base.endsWith("_upper")) base = base.substring(0, base.length() - "_upper".length());
+		return MELEE_LOWER_BASES.contains(base) ? base + "_lower" : "idle_lower";
+	}
+
 	/**
 	 * **"人已经停下、但当前还在播走路段"** 吗（用户 2026-10-16："静止时 idle 动画未能覆盖 walk 系列动画"）。
 	 *
@@ -667,15 +855,49 @@ public final class BowgunRig implements GeoReplacedEntity {
 
 	/** 按当前动作状态挑动画。CONTINUE = 什么都不动（保持上一段），STOP = 交回默认姿势。 */
 	private PlayState pick(AnimationState<BowgunRig> state) {
+		// 主控制器停过（片段播完 / 上层接管后 STOP）：必须先复位，否则
+		// "没有通道的骨骼"会被拉回 geo 初始值 —— body.position 的初始值是 [0,0,0]，
+		// 也就是站姿，蹲射会当场站起来。
+		recoverStoppedController(state);
 		Entity entity = entityOf(state);
 		if (entity == null) {
 			// 同上：宁可给个待机姿势也不要 STOP（STOP = 整模型弹回 geo 初始姿势）
 			return play(state, "idle");
 		}
 		GunClientState.Entry e = GunClientState.get(entity.getId());
+		// 灵魂锚技能：投掷/牵引/回收阶段由技能接管全身姿势。
+		String anchorAnimation = com.mechaniciancombat.client.SoulAnchorSkillClientState
+				.animationName(entity.getId());
+		if (anchorAnimation != null) {
+			return play(state, anchorAnimation);
+		}
+		// 动能剑：独立的一套 GS_* 动画，不走枪械的瞄准/换弹状态。
+		if (entity instanceof net.minecraft.world.entity.player.Player player
+				&& TkGun.isKineticSword(player)) {
+			return pickKineticSword(state, entity, e);
+		}
 		// **上半身叠层模式**（腰射举枪 / 架枪走动 / 换弹走动）：这条控制器只负责腿，
 		// 上身交给 `upper` 那条（GeckoLib 里后注册的控制器覆盖先注册的，按骨骼生效）——
 		// 这样"架枪走路""边走边换弹"都是"上身保持姿势 + 腿在走"，见 upperAnimationFor 的表。
+        if (e != null && e.airborneIdle) return play(state, "idle");
+        if (e != null && e.active()) {
+            switch (e.state) {
+                case MELEE:
+                    if (e.meleeDash) return play(state, "ATK_run");
+                    if (e.meleeDashReturn) return play(state, e.meleeReturnRun ? "ATK_2_dash_to_run" : "ATK_2_dash_to_idle");
+                    // 近战腿：作者为 ATK_2/3/4/hold_over 生成了独立的下半身通道，
+                    // 用它们才不会在中段被走路/奔跑腿动画盖掉（r774）。
+                    return play(state, meleeLowerAnimation(e));
+                case SKILL_JUMP: return play(state, entity.getDeltaMovement().y <= 0.01D ? "fall" : "jump");
+                case FALL_ATTACK: return play(state, "fall_attack");
+                case FALL_ATTACK_RECOVERY: return play(state, "fall_attack_over_to_idle");
+                case FORTRESS_SKILL_LOAD: return play(state, e.fortressSlide ? "sliding" : TkGunClient.isMoving(entity.getId()) ? walkOrIdleLower(entity) : "skill_load_lower");
+                case FORTRESS_SKILL_READY_GATHER: return play(state, "ready_gather_lower");
+                case FORTRESS_SKILL_GATHER: return play(state, "gather_lower");
+                case FORTRESS_SKILL_HIT: return play(state, "hit_lower");
+                default: break;
+            }
+        }
 		if (upperLayerActive(entity)) {
 			// **静止时 idle 必须盖掉走路段**（用户 2026-10-16："静止时 idle 动画未能覆盖 walk 系列动画"）：
 			// 走路那几段是**循环**动画，只要哪条路径继续让它播着，人一停下就会原地踏步。
@@ -827,6 +1049,122 @@ public final class BowgunRig implements GeoReplacedEntity {
 	}
 
 	/**
+	 * 动能剑的第三人称动画：移动 / 跳跃 / 六段近战 / 收势。
+	 *
+	 * <p>r993/r994 移植要点（上游 `pickKineticSword`）：
+	 * <ul>
+	 *   <li>跳跃 / 近战 / 落地收势阶段**先清掉起步与收步窗口**，否则残留的
+	 *       `GS_run_back-idle` 会盖在 `fall_back-idle` 上（落地瞬间弹回跑姿）；</li>
+	 *   <li>起步那 2 tick 播 `idle_to_run`、收步那 6 tick 播 `GS_run_back-idle`；</li>
+	 *   <li>近战收势（`_back-idle`）按 `shotSeq` 只重播一次，后续 CONTINUE 保持尾帧。</li>
+	 * </ul>
+	 */
+	private PlayState pickKineticSword(AnimationState<BowgunRig> state, Entity entity, GunClientState.Entry entry) {
+		// 翻滚：恢复为真实翻滚位移，但动画用持剑奔跑动作（用户要求）。
+		if (entry != null && (entry.state == TkGun.State.ROLL || entry.state == TkGun.State.ROLL_TO_IDLE)) {
+			resetKineticRunAnimationBridges();
+			state.getController().transitionLength(entry.state == TkGun.State.ROLL ? 0 : 1);
+			return play(state, entry.state == TkGun.State.ROLL ? "GS_run" : "idle");
+		}
+		if (entry != null && entry.state == TkGun.State.SKILL_JUMP) {
+			resetKineticRunAnimationBridges();
+			state.getController().transitionLength(0);
+			return play(state, kineticJumpAnimation(entity, entry));
+		}
+		if (entry != null && entry.state == TkGun.State.MELEE) {
+			if (entry.meleeReturning) {
+				resetKineticRunAnimationBridges();
+			}
+			int step = Math.max(1, Math.min(6, entry.shotIndex));
+			String name;
+			if (entry.kineticDraft && !entry.meleeReturning) {
+				name = step == 2 ? "GS_ATK_2-3_draft" : "GS_ATK_4-5_draft";
+			} else {
+				name = "GS_ATK_" + step + (entry.meleeReturning ? "_back-idle" : "");
+			}
+			if (entry.meleeReturning && name.endsWith("_back-idle")) {
+				if (entry.shotSeq == kineticBackIdleShotSeq) {
+					state.getController().transitionLength(0);
+					return PlayState.CONTINUE;
+				}
+				kineticBackIdleShotSeq = entry.shotSeq;
+				state.getController().forceAnimationReset();
+			}
+			entry.lastMeleeAnimation = name;
+			state.getController().transitionLength(0);
+			return play(state, name);
+		}
+		if (!entity.onGround()) {
+			state.getController().transitionLength(0);
+			return play(state, kineticJumpAnimation(entity, entry));
+		}
+		// 落地收势：`SKILL_JUMP → IDLE` 之后 6 tick 内停在 `fall_back-idle`。
+		if (entry != null && entry.state == TkGun.State.IDLE
+				&& TkGunClient.ticks() < entry.kineticSwordLandingIdleUntil) {
+			resetKineticRunAnimationBridges();
+			state.getController().transitionLength(0);
+			return play(state, "fall_back-idle");
+		}
+		String walk = TkGunClient.walkAnimation(entity.getId());
+		boolean moving = TkGunClient.isMoving(entity.getId())
+				|| TkGunClient.hasMovementInput(entity.getId());
+		boolean sprintInput = entity instanceof net.minecraft.world.entity.player.Player player
+				&& player.isSprinting();
+		boolean chainReady = com.mechaniciancombat.client.SoulAnchorSkillClientState.ready(entity.getId());
+		net.minecraft.client.Minecraft client = net.minecraft.client.Minecraft.getInstance();
+		if (entity == client.player && client.options.keySprint.isDown()) {
+			sprintInput = true;
+		}
+		if (chainReady) {
+			// 锁链待机（chain_ready）与疾跑共用按键：待机时四向走路动画要接管腿部，不要播 GS_run。
+			sprintInput = false;
+		}
+		double speed = entity.getDeltaMovement().horizontalDistance();
+		boolean dashForwardRun = chainReady
+				&& GunClientState.dashing(entity.getId())
+				&& "run".equals(walk);
+		boolean running = (!chainReady || dashForwardRun) && moving
+				&& (("run".equals(walk)) || sprintInput || speed >= 0.25D);
+		int now = TkGunClient.ticks();
+		if (running && !kineticWasRunning) {
+			kineticRunTransitionUntil = now + 2;
+		}
+		if (!running && kineticWasRunning) {
+			kineticRunBackIdleUntil = now + 6;
+		}
+		kineticWasRunning = running;
+		if (running) {
+			state.getController().transitionLength("GS_run".equals(currentAnimationName) ? 0 : 1);
+			return play(state, "GS_run");
+		}
+		if (walk != null && walk.startsWith("walk_")) {
+			String directional = "GS_" + walk;
+			state.getController().transitionLength(directional.equals(currentAnimationName) ? 0 : 1);
+			return play(state, directional);
+		}
+		if (now < kineticRunTransitionUntil) {
+			state.getController().transitionLength(0);
+			return play(state, "idle_to_run");
+		}
+		if (now < kineticRunBackIdleUntil) {
+			state.getController().transitionLength(0);
+			return play(state, "GS_run_back-idle");
+		}
+		state.getController().transitionLength(1);
+		return play(state, "idle");
+	}
+
+	/** 动能剑跳跃/下落：跑跳用作者专门的 `GS_run_jump` / `GS_run_fall`。 */
+	private static String kineticJumpAnimation(Entity entity, GunClientState.Entry entry) {
+		boolean runJump = entry != null && entry.kineticRunJump;
+		boolean falling = entity.getDeltaMovement().y <= 0.01D;
+		if (runJump) {
+			return falling ? "GS_run_fall" : "GS_run_jump";
+		}
+		return falling ? "fall" : "jump";
+	}
+
+	/**
 	 * 作者在动画文件里标的循环语义：**只有 run 是 loop=true**，其余都是 hold_on_last_frame
 	 * （播一次、停在最后一帧）。
 	 *
@@ -839,7 +1177,8 @@ public final class BowgunRig implements GeoReplacedEntity {
 	 * 其余全是"播一次、停在最后一帧"。
 	 */
 	private static final Set<String> LOOPING = new HashSet<>(Set.of(
-			"idle", "run", "walk_front", "walk_back", "walk_left", "walk_right", "Focus_hold"));
+			"idle", "run", "walk_front", "walk_back", "walk_left", "walk_right", "Focus_hold",
+			"GS_run", "GS_walk_front", "GS_walk_back", "GS_walk_left", "GS_walk_right"));
 	private static final Map<String, RawAnimation> RAW = new HashMap<>();
 
 	private static RawAnimation rawFor(String name) {
@@ -867,7 +1206,35 @@ public final class BowgunRig implements GeoReplacedEntity {
 		if (name.endsWith("_lower")) {
 			return !name.startsWith("reload");
 		}
+		if (name.startsWith("GS_walk_")) {
+			return true;
+		}
 		return LOOPING.contains(name);
+	}
+
+	/**
+	 * 控制器一旦 STOP，GeckoLib 会把"这一帧没有通道的骨骼"全部拉回 geo 初始姿势 ——
+	 * 对 `body` 来说就是 `position.y = 0`（**站姿**），蹲姿立刻消失。
+	 *
+	 * <p>上游 r611 之后补了这道恢复：发现控制器停在 STOPPED 就先 `forceAnimationReset()`，
+	 * 让下一次 `setAndContinue` 真的从头播，而不是把缓存片段当成"已在播"而直接忽略。
+	 *
+	 * <p>例外：动能剑近战收势（`*_back-idle`）是一次性片段，播完本来就该停在尾帧；
+	 * 这时不能复位，否则收势会被重播成"卡在攻击动作里"。
+	 */
+	private void recoverStoppedController(AnimationState<BowgunRig> state) {
+		AnimationController<BowgunRig> controller = state.getController();
+		if (controller.getAnimationState() != AnimationController.State.STOPPED) {
+			return;
+		}
+		Entity entity = entityOf(state);
+		GunClientState.Entry entry = entity == null ? null : GunClientState.get(entity.getId());
+		if (entry != null && entry.state == TkGun.State.MELEE && entry.meleeReturning
+				&& currentAnimationName != null && currentAnimationName.endsWith("_back-idle")) {
+			// 收势已经播完：交给调用方切 idle，别复位后重播。
+			return;
+		}
+		controller.forceAnimationReset();
 	}
 
 	private BowgunRig() {

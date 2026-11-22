@@ -34,9 +34,22 @@ public final class BowgunRigClient {
 	 *
 	 * @return 始终返回 false，让原版 PlayerRenderer 在 GeckoLib 枪械后继续渲染身体与特征层
 	 */
+    /** Native armor dodges need the player pose even while no gun is held. */
+    public static boolean renderArmorDodge(AbstractClientPlayer player) {
+        if (player == null || !com.mechaniciancombat.item.MechanicianUndersuitItem.canUseArmorDodge(player)) return false;
+        var entry = com.mechaniciancombat.client.GunClientState.get(player.getId());
+        if (entry == null) return false;
+        return entry.state == TkGun.State.SLIDE || entry.state == TkGun.State.SLIDE_READY
+                || (!com.mechaniciancombat.CombatRollHook.isInstalled()
+                    && (entry.state == TkGun.State.ROLL || entry.state == TkGun.State.ROLL_TO_IDLE));
+    }
+
 	public static boolean renderIfHolding(AbstractClientPlayer player, float yaw, float tickDelta,
 										  PoseStack matrices, MultiBufferSource consumers, int light) {
-		if (!TkGun.holdingGun(player) || context == null) {
+		boolean anchorSkill = com.mechaniciancombat.client.SoulAnchorSkillClientState
+				.active(player.getId());
+		if ((!TkGun.holdingGun(player) && !renderArmorDodge(player) && !anchorSkill)
+				|| context == null) {
 			return false;
 		}
 		if (renderer == null) {

@@ -45,11 +45,375 @@ public final class GunDebugHarness {
 	private static final boolean BACKPACK_DEMO = truthy(System.getProperty("tkgun.demoBackpack"));
 	private static final boolean LOYALTY_DEMO = truthy(System.getProperty("tkgun.loyaltyDemo"));
 	private static final boolean WIND_DEMO = truthy(System.getProperty("tkgun.windDemo"));
+	/** 配方编辑器界面的实机验收（只开屏 + 截图，不改配方）。 */
+	private static final boolean RECIPE_UI_DEMO = truthy(System.getProperty("tkgun.demoRecipeUi"));
+	/** 猎矛固定炮台的实机验收：发矛 → 右键部署 → 等炮台生成/开火。 */
+	private static final boolean HUNTER_DEMO = truthy(System.getProperty("tkgun.demoHunter"));
+	/** 两个改装台方块的界面实机验收。 */
+	private static final boolean TABLES_DEMO = truthy(System.getProperty("tkgun.demoTables"));
+	/** 战旗光环的实机验收：召唤战旗 → 检查玩家是否获得吸收/力量。 */
+	private static final boolean BANNER_DEMO = truthy(System.getProperty("tkgun.demoBanner"));
+	/** 灵魂锚的实机验收：装 C3/T1 部件 → 按住冲刺蓄力 → 松开投掷。 */
+	private static final boolean SOUL_ANCHOR_DEMO = truthy(System.getProperty("tkgun.demoSoulAnchor"));
+	/**
+	 * 演示用哪把枪：`bowgun`（默认）/ `abyssal_ancient_cannon` / `veritas_et_justitia`。
+	 *
+	 * <p>为什么要能选：蹲射 bug 只出现在后两把，只验 bowgun 等于没验到问题所在。
+	 * 用法 `-Ptkgun.demoGun=abyssal_ancient_cannon`。
+	 */
+	private static final String DEMO_GUN = System.getProperty("tkgun.demoGun", "bowgun").trim();
 
 	private static boolean truthy(String value) {
 		return value != null && (value.equals("1") || value.equalsIgnoreCase("true") || value.equalsIgnoreCase("yes"));
 	}
+
+	/**
+	 * 单机验收：把 `DEMO_GUN` 指定的枪 + 弹药塞进快捷栏 0/1，并让客户端真的选中它。
+	 *
+	 * <p>成功才置 `demoKitGranted`，失败（例如服务器还没起来）下一 tick 会重试。
+	 */
+	private static void grantDemoKit(Minecraft client) {
+		var server = client.getSingleplayerServer();
+		if (server == null || client.player == null) {
+			return;
+		}
+		String name = client.player.getGameProfile().getName();
+		server.execute(() -> {
+			try {
+				var source = server.createCommandSourceStack();
+				int granted = server.getCommands().performPrefixedCommand(source,
+						"tkgun kit " + name + " " + DEMO_GUN);
+				TkGun.LOGGER.info("[tkgun-demo] /tkgun kit {} 结果={} player={}", DEMO_GUN, granted, name);
+				if (granted > 0) {
+					demoKitGranted = true;
+				}
+			} catch (Throwable error) {
+				TkGun.LOGGER.warn("[tkgun-demo] /tkgun kit 抛异常", error);
+			}
+		});
+	}
+
+	/** 通过 `/tkgun fire` 让服务端真的开一枪（与玩家扣扳机同一个 `tryFire` 入口）。 */
+	private static void fireViaServer(Minecraft client) {
+		var server = client.getSingleplayerServer();
+		if (server == null || client.player == null) {
+			return;
+		}
+		String name = client.player.getGameProfile().getName();
+		server.execute(() -> {
+			try {
+				server.getCommands().performPrefixedCommand(
+						server.createCommandSourceStack(), "tkgun fire " + name);
+				TkGun.LOGGER.info("[tkgun-demo] 已请求服务端开火（专注中）player={}", name);
+			} catch (Throwable error) {
+				TkGun.LOGGER.warn("[tkgun-demo] /tkgun fire 抛异常", error);
+			}
+		});
+	}
 	private static boolean remoteEnabled;
+	private static int hunterDemoTick;
+	private static int tablesDemoTick;
+	private static int bannerDemoTick;
+	private static int soulDemoTick;
+
+	/**
+	 * 灵魂锚的实机验收。
+	 *
+	 * <p>`SoulAnchorSkillService#isAvailable` 要求**胸甲装 C3（灵魂锁链）+ 护腿装 T1（灵魂锚）**，
+	 * 所以这里先用 `ArmorUpgradeData.setPartId` 把部件写进护甲再穿上 ——
+	 * 顺带也验证了模块 4 的"护甲模块"数据链。
+	 */
+	private static void tickSoulAnchorDemo(Minecraft client) {
+		soulDemoTick++;
+		if (soulDemoTick == 10 && client.getSingleplayerServer() != null) {
+			var server = client.getSingleplayerServer();
+			var playerId = client.player.getUUID();
+			server.execute(() -> {
+				var player = server.getPlayerList().getPlayer(playerId);
+				if (player == null) {
+					return;
+				}
+				net.minecraft.world.item.ItemStack chest = new net.minecraft.world.item.ItemStack(
+						com.mechaniciancombat.registry.ModRegistries.MECHANICIAN_CHESTPLATE.get());
+				net.minecraft.world.item.ItemStack legs = new net.minecraft.world.item.ItemStack(
+						com.mechaniciancombat.registry.ModRegistries.MECHANICIAN_LEGGINGS.get());
+				com.mechaniciancombat.item.ArmorUpgradeData.setPartId(chest,
+						com.mechaniciancombat.item.ArmorPartItem.Kind.C3, "tkgun:soul_chain");
+				com.mechaniciancombat.item.ArmorUpgradeData.setPartId(legs,
+						com.mechaniciancombat.item.ArmorPartItem.Kind.T1, "tkgun:soul_anchor");
+				player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.CHEST, chest);
+				player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.LEGS, legs);
+				// 底衣是护甲生效的前置。
+				player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.CHEST, chest);
+				player.getInventory().armor.set(2, chest);
+				player.getInventory().armor.set(1, legs);
+				// ⚠️ 没有底衣时，`TkGunServer#enforceMechanicianArmorRequirement` 会**每 tick**
+				// 把机械师护甲脱下来（"机械师护甲必须配底衣"）—— 不装底衣，
+				// 前面装的 C3/T1 下一 tick 就没了，`isAvailable` 变 false。
+				top.theillusivec4.curios.api.CuriosApi.getCuriosInventory(player).resolve()
+						.ifPresent(curios -> {
+							var charm = curios.getCurios().get("charm");
+							if (charm != null && charm.getStacks().getSlots() > 0) {
+								charm.getStacks().setStackInSlot(0, new net.minecraft.world.item.ItemStack(
+										com.mechaniciancombat.registry.ModRegistries.MECHANICIAN_UNDERSUIT.get()));
+							}
+						});
+				TkGun.LOGGER.info("[tkgun-soul-demo] 已装 C3/T1 部件 可用={}",
+						com.mechaniciancombat.SoulAnchorSkillService.isAvailable(player));
+				TkGun.LOGGER.info("[tkgun-soul-demo] 落地={} 胸甲={} 护腿={}",
+						player.onGround(),
+						com.mechaniciancombat.item.ArmorUpgradeData.partId(
+								player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.CHEST),
+								com.mechaniciancombat.item.ArmorPartItem.Kind.C3),
+						com.mechaniciancombat.item.ArmorUpgradeData.partId(
+								player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.LEGS),
+								com.mechaniciancombat.item.ArmorPartItem.Kind.T1));
+			});
+		}
+		// 蓄力 = 按住（held=true），投掷 = 松开（held=false）。
+		// 直接发 `SoulAnchorInputPayload`，与玩家按冲刺键走同一条 C2S 链路；
+		// 不依赖 `keySprint.setDown`（原版输入链未必在 demo 环境里如实反映）。
+		if (soulDemoTick == 60) {
+			ClientNetwork.send(new com.mechaniciancombat.net.SoulAnchorInputPayload(true, false, false));
+			TkGun.LOGGER.info("[tkgun-soul-demo] 已发 press（蓄力）");
+		}
+		if (soulDemoTick == 100) {
+			ClientNetwork.send(new com.mechaniciancombat.net.SoulAnchorInputPayload(false, false, false));
+			TkGun.LOGGER.info("[tkgun-soul-demo] 已发 release（投掷）");
+		}
+		// press 之后**逐 tick** 观察：找不到目标时会立刻 finish，窗口很窄。
+		if (soulDemoTick >= 60 && soulDemoTick <= 72 || soulDemoTick == 90
+				|| soulDemoTick == 105 || soulDemoTick == 130) {
+			int anchors = client.level.getEntitiesOfClass(
+					com.mechaniciancombat.entity.SoulAnchorEntity.class,
+					client.player.getBoundingBox().inflate(32.0D)).size();
+			TkGun.LOGGER.info("[tkgun-soul-demo] tick={} 阶段={} 锚实体={}",
+					soulDemoTick,
+					describeSoulPhase(client.player.getId()),
+					anchors);
+			// 只在关键帧截图：每 tick 截图会让 IO 线程堆积。
+			if (soulDemoTick == 62 || soulDemoTick == 130) {
+				shot(client, "tkgun_soul_" + soulDemoTick + ".png");
+			}
+		}
+	}
+
+	/**
+	 * 战旗光环的实机验收：在玩家旁边召唤一面战旗，观察玩家是否获得
+	 * `ABSORPTION` + `DAMAGE_BOOST`（`WarBannerEntity#applyAura` 每 5 tick 施加一次）。
+	 */
+	/** 把灵魂锚客户端阶段翻译成可读字符串（`Entry.phase()` 是 byte）。 */
+	private static String describeSoulPhase(int playerId) {
+		var entry = com.mechaniciancombat.client.SoulAnchorSkillClientState.get(playerId);
+		if (entry == null) {
+			return "无";
+		}
+		int phase = entry.phase();
+		return switch (phase) {
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.READY -> "READY";
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.THROW -> "THROW";
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.ANCHOR_FLIGHT -> "ANCHOR_FLIGHT";
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.ANCHOR_STALL -> "ANCHOR_STALL";
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.DRAG -> "DRAG";
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.DRAG_ENTITY -> "DRAG_ENTITY";
+			case com.mechaniciancombat.net.SoulAnchorSkillPayload.RECALL -> "RECALL";
+			default -> "phase=" + phase;
+		};
+	}
+
+	private static void tickBannerDemo(Minecraft client) {
+		bannerDemoTick++;
+		if (bannerDemoTick == 1 && client.getSingleplayerServer() != null) {
+			var server = client.getSingleplayerServer();
+			var pos = client.player.blockPosition().offset(3, 0, 0);
+			String uuid = client.player.getUUID().toString();
+			server.execute(() -> {
+				var source = server.createCommandSourceStack();
+				// 世界持久化：先清掉旧战旗，避免冷却/数量干扰。
+				server.getCommands().performPrefixedCommand(source, "kill @e[type=tkgun:war_banner]");
+				server.getCommands().performPrefixedCommand(source,
+						"summon tkgun:war_banner " + pos.getX() + " " + pos.getY() + " " + pos.getZ()
+								+ " {Owner:[" + uuid + "]}");
+				TkGun.LOGGER.info("[tkgun-banner-demo] 已召唤战旗 {}", pos);
+			});
+		}
+		if (bannerDemoTick == 40 || bannerDemoTick == 80 || bannerDemoTick == 140) {
+			var absorption = client.player.getEffect(net.minecraft.world.effect.MobEffects.ABSORPTION);
+			var strength = client.player.getEffect(net.minecraft.world.effect.MobEffects.DAMAGE_BOOST);
+			int banners = client.level.getEntitiesOfClass(
+					com.mechaniciancombat.entity.WarBannerEntity.class,
+					client.player.getBoundingBox().inflate(16.0D)).size();
+			TkGun.LOGGER.info("[tkgun-banner-demo] tick={} 战旗={} 吸收={} 力量={}",
+					bannerDemoTick, banners,
+					absorption == null ? "无" : ("有(" + absorption.getDuration() + "t)"),
+					strength == null ? "无" : ("有(" + strength.getDuration() + "t)"));
+			shot(client, "tkgun_banner_" + bannerDemoTick + ".png");
+		}
+	}
+	private static net.minecraft.core.BlockPos armorTablePos;
+	private static net.minecraft.core.BlockPos backpackTablePos;
+
+	/**
+	 * 两个改装台界面的实机验收：放方块 → 右键打开 → 截图。
+	 *
+	 * <p>方块交互不能用 `KeyMapping.setDown` 模拟（原版走 `consumeClick` 的按下边沿），
+	 * 这里直接 `gameMode.useItemOn(...)`，与玩家真的右键方块是同一条 C2S 链路。
+	 */
+	private static void tickTablesDemo(Minecraft client) {
+		tablesDemoTick++;
+		if (tablesDemoTick == 1 && client.getSingleplayerServer() != null) {
+			var server = client.getSingleplayerServer();
+			net.minecraft.core.BlockPos base = client.player.blockPosition();
+			armorTablePos = base.offset(2, 0, 0);
+			backpackTablePos = base.offset(-2, 0, 0);
+			net.minecraft.core.BlockPos armor = armorTablePos;
+			net.minecraft.core.BlockPos backpack = backpackTablePos;
+			server.execute(() -> {
+				var source = server.createCommandSourceStack();
+				server.getCommands().performPrefixedCommand(source,
+						"setblock " + armor.getX() + " " + armor.getY() + " " + armor.getZ()
+								+ " tkgun:armor_modification_table");
+				server.getCommands().performPrefixedCommand(source,
+						"setblock " + backpack.getX() + " " + backpack.getY() + " " + backpack.getZ()
+								+ " tkgun:backpack_modification_table");
+				TkGun.LOGGER.info("[tkgun-tables-demo] 已放置两个改装台");
+			});
+		}
+		if (tablesDemoTick == 20 && armorTablePos != null) {
+			useBlock(client, armorTablePos);
+		}
+		if (tablesDemoTick == 40) {
+			TkGun.LOGGER.info("[tkgun-tables-demo] 盔甲改装台 screen={}",
+					client.screen == null ? "null" : client.screen.getClass().getSimpleName());
+			shot(client, "tkgun_armor_table.png");
+		}
+		if (tablesDemoTick == 60 && client.screen != null) {
+			client.screen.onClose();
+		}
+		if (tablesDemoTick == 80 && backpackTablePos != null) {
+			useBlock(client, backpackTablePos);
+		}
+		if (tablesDemoTick == 100) {
+			TkGun.LOGGER.info("[tkgun-tables-demo] 背包改装台 screen={}",
+					client.screen == null ? "null" : client.screen.getClass().getSimpleName());
+			shot(client, "tkgun_backpack_table.png");
+		}
+	}
+
+	private static void useBlock(Minecraft client, net.minecraft.core.BlockPos pos) {
+		if (client.gameMode == null) {
+			return;
+		}
+		var hit = new net.minecraft.world.phys.BlockHitResult(
+				net.minecraft.world.phys.Vec3.atCenterOf(pos),
+				net.minecraft.core.Direction.UP, pos, false);
+		client.gameMode.useItemOn(client.player,
+				net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+	}
+
+	/**
+	 * 猎矛固定炮台的实机验收：发矛 → 右键部署 → 等炮台生成并开火。
+	 *
+	 * <p>部署走 `MechanicianHunterSpearItem#use` → `TkGunServer#deployHunterTurret`，
+	 * 之后 `tickAll` 里的 `tickHunterSpearDeploy` 在 23 tick 后生成炮台。
+	 */
+	private static void tickHunterDemo(Minecraft client) {
+		hunterDemoTick++;
+		if (hunterDemoTick == 1 && client.getSingleplayerServer() != null) {
+			var server = client.getSingleplayerServer();
+			String name = client.player.getGameProfile().getName();
+			server.execute(() -> {
+				var source = server.createCommandSourceStack();
+				// 世界是持久化的：上一轮演示留下的炮台会占住数量上限，先清掉。
+				server.getCommands().performPrefixedCommand(source,
+						"kill @e[type=tkgun:hunter_turret]");
+				server.getCommands().performPrefixedCommand(source,
+						"item replace entity " + name + " hotbar.0 with tkgun:hunter_spear");
+				server.getCommands().performPrefixedCommand(source,
+						"item replace entity " + name + " hotbar.1 with tkgun:bolt 64");
+				server.getCommands().performPrefixedCommand(source, "clear " + name + " minecraft:dirt");
+				TkGun.LOGGER.info("[tkgun-hunter-demo] 已发放猎矛");
+			});
+		}
+		if (hunterDemoTick == 3) {
+			client.player.getInventory().selected = 0;
+			if (client.getConnection() != null) {
+				client.getConnection().send(
+						new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(0));
+			}
+		}
+		// 抬头（避免右键被方块交互吃掉），然后按住右键部署。
+		if (hunterDemoTick == 20) {
+			client.player.setXRot(-35.0F);
+		}
+		// ⚠️ 不能用 `keyUse.setDown(true)` 模拟右键：原版 `handleKeybinds` 用的是
+		// `consumeClick()`（按下边沿），`setDown` 不产生边沿 → `Item#use` 永远不会被调用。
+		// 直接走 `gameMode.useItem`，与玩家真的点右键是同一条 C2S 链路。
+		if (hunterDemoTick == 26 && client.gameMode != null) {
+			client.gameMode.useItem(client.player, net.minecraft.world.InteractionHand.MAIN_HAND);
+			TkGun.LOGGER.info("[tkgun-hunter-demo] 已触发右键使用（部署）");
+		}
+		// 炮台要有目标才会开火：在正前方 8 格放一只僵尸。
+		if (hunterDemoTick == 40 && client.getSingleplayerServer() != null) {
+			var server = client.getSingleplayerServer();
+			float yaw = client.player.getYRot();
+			double dx = -Math.sin(Math.toRadians(yaw)) * 8.0D;
+			double dz = Math.cos(Math.toRadians(yaw)) * 8.0D;
+			double x = client.player.getX() + dx;
+			double y = client.player.getY();
+			double z = client.player.getZ() + dz;
+			server.execute(() -> {
+				var source = server.createCommandSourceStack();
+				server.getCommands().performPrefixedCommand(source,
+						String.format(java.util.Locale.ROOT,
+								"summon minecraft:zombie %.2f %.2f %.2f {NoAI:1b,PersistenceRequired:1b}",
+								x, y, z));
+				TkGun.LOGGER.info("[tkgun-hunter-demo] 已召唤目标僵尸 ({}, {}, {})", Math.round(x), Math.round(y), Math.round(z));
+			});
+		}
+		if (hunterDemoTick == 60 || hunterDemoTick == 140 || hunterDemoTick == 220) {
+			var turrets = client.level.getEntitiesOfClass(
+					com.mechaniciancombat.entity.HunterTurretEntity.class,
+					client.player.getBoundingBox().inflate(24.0D));
+			TkGun.LOGGER.info("[tkgun-hunter-demo] tick={} 炮台数={} 手上={}",
+					hunterDemoTick, turrets.size(), client.player.getMainHandItem().getItem());
+			if (!turrets.isEmpty()) {
+				TkGun.LOGGER.info("[tkgun-hunter-demo] 炮台 fireSequence={}（>0 = 真的开过火）",
+						turrets.get(0).fireSequence());
+			}
+			int bolts = client.level.getEntitiesOfClass(
+					com.mechaniciancombat.entity.MoltenTridentEntity.class,
+					client.player.getBoundingBox().inflate(32.0D)).size();
+			TkGun.LOGGER.info("[tkgun-hunter-demo] 场上炮台弹丸={}", bolts);
+			var monsters = client.level.getEntitiesOfClass(
+					net.minecraft.world.entity.LivingEntity.class,
+					client.player.getBoundingBox().inflate(16.0D),
+					e -> e instanceof net.minecraft.world.entity.monster.Monster && e.isAlive());
+			TkGun.LOGGER.info("[tkgun-hunter-demo] 附近存活怪物={} 玩家={}",
+					monsters.size(), client.player.blockPosition());
+			for (var m : monsters) {
+				TkGun.LOGGER.info("[tkgun-hunter-demo]   目标 {} 位置={} 血={}",
+						m.getType().toShortString(), m.blockPosition(), m.getHealth());
+			}
+			if (!turrets.isEmpty()) {
+				TkGun.LOGGER.info("[tkgun-hunter-demo]   炮台位置={}",
+						turrets.get(0).blockPosition());
+			}
+			// 把镜头对准炮台，否则截图里可能只有地面。
+			if (!turrets.isEmpty()) {
+				var turret = turrets.get(0);
+				net.minecraft.world.phys.Vec3 eye = client.player.getEyePosition();
+				net.minecraft.world.phys.Vec3 to = turret.position().add(0, 0.9D, 0).subtract(eye);
+				double horiz = Math.sqrt(to.x * to.x + to.z * to.z);
+				client.player.setYRot((float) Math.toDegrees(Math.atan2(-to.x, to.z)));
+				client.player.setYHeadRot(client.player.getYRot());
+				client.player.setXRot((float) -Math.toDegrees(Math.atan2(to.y, horiz)));
+				TkGun.LOGGER.info("[tkgun-hunter-demo] 对准炮台 距离={} 格",
+						Math.round(horiz * 10) / 10.0);
+			}
+			shot(client, "tkgun_hunter_" + hunterDemoTick + ".png");
+		}
+	}
 	private static boolean ammoUiCaptured;
 	private static int ammoUiTransferStage;
 	private static int ammoUiTransferNextTick;
@@ -79,6 +443,8 @@ public final class GunDebugHarness {
 	private static int tick;
 	private static boolean started;
 	private static int waitTicks;
+	/** 演示模式下的自动发放只做一次。 */
+	private static boolean demoKitGranted;
 	private static int bootTicks;
 	private static String lastAnim = "";
 	private static int shotDelay = -1;
@@ -101,6 +467,22 @@ public final class GunDebugHarness {
 			tickWindDemo(client);
 			return;
 		}
+		if (HUNTER_DEMO) {
+			tickHunterDemo(client);
+			return;
+		}
+		if (TABLES_DEMO) {
+			tickTablesDemo(client);
+			return;
+		}
+		if (BANNER_DEMO) {
+			tickBannerDemo(client);
+			return;
+		}
+		if (SOUL_ANCHOR_DEMO) {
+			tickSoulAnchorDemo(client);
+			return;
+		}
 		if (!started) {
 			// 拿着"布景清理棒"时走另一条线：定期点一下左键，用来验证"左键点 NPC 才清掉"
 			if (holdingCleanupWand(client)) {
@@ -114,6 +496,14 @@ public final class GunDebugHarness {
 				return;
 			}
 			// 等拿到枪再开始（单机自己发，联机由 RCON /item replace 发好）
+			//
+			// ⚠️ 必须先按 `DEMO_GUN` **强制发一次**再判断"拿没拿到"：
+			// 世界是持久化的，上一轮演示留下的枪还在槽 0，`holdingGun` 一进世界就是 true，
+			// 于是发枪分支被整个跳过 —— 指定 `-Ptkgun.demoGun=abyssal_ancient_cannon`
+			// 会静默失效，验的还是旧枪（2026-11-22 踩过）。
+			if (!demoKitGranted && client.getSingleplayerServer() != null) {
+				grantDemoKit(client);
+			}
 			if (TkGun.holdingGun(client.player)) {
 				started = true;
 				ammoUiCaptured = false;
@@ -123,14 +513,20 @@ public final class GunDebugHarness {
 				TkGun.LOGGER.info("[tkgun-demo] 拿到武器，开始自动演示（第三人称）");
 			} else {
 				waitTicks++;
-				// ⚠️ 2026-10-13：`/tkgun kit` 把炮塞在快捷栏 0，但玩家**当前选中的格子**可能是别的
-				// （实测是熟牛排）——那样服务端看到的"主手"不是枪：右键会去啃牛排、左键的开火包被忽略，
-				// 演示白跑（早先靠"副手也塞一把"绕过去，但那只验到 holdingGun，验不到主手那条链路）。
-				// 这里按一下原版快捷栏 1 键（走 UpdateSelectedSlotC2SPacket，服务端才认）。
+				// 发枪由上面的 `grantDemoKit` 负责（它在 `holdingGun` 判断之前无条件跑一次），
+				// 这里只负责等客户端真正拿到手。
+				// ⚠️ `/tkgun kit` 把炮塞在快捷栏 0，但玩家**当前选中的格子**可能是别的
+				// （2026-11-22 实测服务端 `selected=8`）——那样服务端看到的"主手"不是枪：
+				// 右键会去啃手上的东西、左键的开火包被忽略，演示白跑。
+				//
+				// ⚠️ 原来这里靠 `keyHotbarSlots[0].setDown(...)` 模拟按键，**不生效**：
+				// 那条路要经过原版 `handleKeybinds`，而模组自己的 `FocusInputLockMixin`
+				// 会在持枪/专注时整段取消它。现在直接发原版切换槽位包，绕开按键链。
 				if (waitTicks % 20 == 1) {
-					client.options.keyHotbarSlots[0].setDown(true);
-				} else if (waitTicks % 20 == 3) {
-					client.options.keyHotbarSlots[0].setDown(false);
+					client.player.getInventory().selected = 0;
+					if (client.getConnection() != null) {
+						client.getConnection().send(new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(0));
+					}
 				}
 				if (waitTicks % 100 == 0) {
 					TkGun.LOGGER.info("[tkgun-demo] 等待手持破垒重炮（服务端用 /item replace 发到快捷栏 0）…");
@@ -269,6 +665,21 @@ public final class GunDebugHarness {
 			ClientNetwork.send(new GunReloadPayload());
 			TkGun.LOGGER.info("[tkgun-demo] 已请求装填，准备验证真实开火与弹药消耗");
 		}
+		if (RECIPE_UI_DEMO) {
+			// 走**玩家自己的**命令源（不是控制台源）：`/tkgun recipeeditor` 内部用
+			// `getPlayerOrException()`，控制台源会直接失败。
+			if (tick == 60 && client.getConnection() != null) {
+				client.getConnection().sendCommand("tkgun recipeeditor");
+			}
+			if (tick == 90) {
+				TkGun.LOGGER.info("[tkgun-ui] recipe editor screen={}",
+						client.screen == null ? "null" : client.screen.getClass().getSimpleName());
+				shot(client, "tkgun_recipe_editor.png");
+			}
+			if (tick == 110 && client.screen != null) {
+				client.screen.onClose();
+			}
+		}
 		// 截图工具/人手会抢焦点 → MC 弹暂停菜单，演示里直接关掉它，别让画面停在菜单上
 		if (client.screen instanceof net.minecraft.client.gui.screens.PauseScreen) {
 			client.setScreen(null);
@@ -279,7 +690,12 @@ public final class GunDebugHarness {
 		// 可视化验收脚本：右键举枪，Z 切换专注；专注期间移动输入被屏蔽，Alt 进入翻滚/滑铲循环。
 		// 实际状态转移以服务端状态机和 /tkgun status 为准。
 		boolean use = (tick > 40 && tick <= 75) || (tick >= 293 && tick <= 320);
-		boolean attack = (tick >= 125 && tick <= 127) || (tick >= 140 && tick <= 142) || (tick >= 150 && tick <= 152);
+		boolean attack = (tick >= 125 && tick <= 127) || (tick >= 140 && tick <= 142) || (tick >= 150 && tick <= 152)
+				// **专注内开火**（蹲射验收的关键一段）：
+				// 专注在 t≈292 由 Shift 进入，`Focus_ready → Focus_hold` 之后必须真的扣扳机，
+				// 才会走到 `Focus_shooting*`。此前这里没有这一段，于是 demo 跑了 4000+ tick
+				// 一次 `Focus_shooting` 都没出现 —— 蹲射的"射击瞬间是否站起"根本无从验收。
+				|| (tick >= 300 && tick <= 302) || (tick >= 312 && tick <= 314);
 		boolean move = (tick > 200 && tick <= 230) || (tick > 260 && tick <= 300);
 		//
 		// ⚠️ 按键脚本只在 tick <= 330 这一段运行，跑完**必须把按过的键全部松开并停止接管**：
@@ -293,6 +709,15 @@ public final class GunDebugHarness {
 			client.options.keySprint.setDown(tick > 270 && tick <= 300);
 			client.options.keyShift.setDown((tick > 290 && tick <= 300)
 					|| (BACKPACK_DEMO && tick >= 210 && tick <= 220));
+			// **专注内开火的确定性驱动**：在专注窗口里直接让服务端执行 `/tkgun fire`。
+			//
+			// 为什么不用 `keyAttack`：专注时 `FocusInputLockMixin` 会取消整段 `handleInputEvents`，
+			// 模拟按键不一定被原版输入链消费（实测 abyssal 的按键注入没产生任何开火包）。
+			// 走命令与玩家扣扳机最终落到同一个 `TkGunServer.tryFire`，只是绕开了输入链，
+			// 用来验收"服务端说 FIRE + focus 时，客户端 rig 到底播什么"这件事完全够用。
+			if (tick == 301 || tick == 313) {
+				fireViaServer(client);
+			}
 		} else if (tick >= 400 && tick <= 520) {
 			// —— 相机阶段（2026-10-14 用户要求：越肩视角 + 人物/摄像头解耦 + 右键转向 + 瞄准放大）——
 			// 键位照旧的语义按（长按右键 = 瞄准），鼠标用 changeLookDirection 模拟（端到端走同一条路）。
@@ -390,13 +815,18 @@ public final class GunDebugHarness {
 				TkGun.LOGGER.info("[tkgun-demo] ④ 站定开火（期望腰射/行走射击：rig=idle|walk_* + 上半身 stand_shooting）");
 			}
 			if (tick == 1050) {
-				// ⑤ 通过 HUD 技能桥进入专注；正常游戏也可直接按 Z 切换。
-				boolean found = pressHudSkillKey(client, 1);
-				TkGun.LOGGER.info("[tkgun-demo] ⑤ 按 hud 技能键进专注（找到 key.hud.skill1={}）；"
-						+ "期望 rig=Focus_over + HUD『专注』 + 服务端『进入专注状态』", found);
-			}
-			if (tick == 1052) {
-				releaseHudSkillKeys(client);
+				// ⑤ 进入专注。
+				//
+				// ⚠️ 原来这里走 `pressHudSkillKey`（模拟外部 HUD 模组的技能键），
+				// 但隔离验收客户端里**没有那个 mod**，按键永远找不到 —— 于是整段
+				// Focus_* 从未播放（2026-11-22 实测：demo 跑了 4000+ tick，
+				// `rig ->` 里一次 Focus 都没有）。
+				//
+				// 现在直接发专注包，与玩家按 Z 走的是同一条 C2S 链路
+				// （`GunFocusPayload`），不依赖任何第三方按键绑定。
+				ClientNetwork.send(new com.mechaniciancombat.net.GunFocusPayload(false));
+				TkGun.LOGGER.info("[tkgun-demo] ⑤ 发送专注包（GunFocusPayload）；"
+						+ "期望 rig=Focus_ready → Focus_hold + 服务端『进入专注状态』");
 			}
 			if (tick == 1085) {
 				TkGun.LOGGER.info("[tkgun-demo] ⑥ 专注里开火（期望 Focus_shooting[N] + 仰角档，不再叠 stand_shooting）");
@@ -1022,7 +1452,7 @@ public final class GunDebugHarness {
 	private static void requestDemoDodge(Minecraft client, String label) {
 		// 生产输入读取 GLFW 物理键状态，KeyMapping#setDown 无法模拟该输入。
 		// 演示改发同一个 C2S 请求，走服务端正式闪避状态机与动画广播；本地预测只用于首帧。
-		ClientNetwork.send(new GunRollPayload());
+		ClientNetwork.send(TkGunClient.rollInput(client));
 		if ("翻滚".equals(label)) {
 			GunClientState.beginLocalRoll(client.player.getId());
 		}

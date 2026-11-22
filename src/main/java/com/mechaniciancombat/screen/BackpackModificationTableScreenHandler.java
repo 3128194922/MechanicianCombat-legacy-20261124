@@ -36,6 +36,8 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 	public static final int HOTBAR_SLOT_START = 32;
 	public static final int CORE_PART_SLOT = 0;
 	public static final int LAUNCHER_PART_SLOT = 1;
+	public static final int MISSILE_PART_SLOT = 3;
+	public static final int GOLEM_CAPSULE_PART_SLOT = 3;
 
 	private static final int[][] PART_SLOT_POSITIONS = {
 			{8, 30},
@@ -83,7 +85,8 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 				@Override
 				public boolean mayPlace(ItemStack stack) {
 					return stack.getItem() instanceof BackpackPartItem part
-							&& acceptsPart(fixedIndex, part.kind());
+							&& acceptsPart(fixedIndex, part.kind())
+							&& upgradeSlotAccepts(fixedIndex, part.kind());
 				}
 			});
 		}
@@ -181,6 +184,7 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 				previousBackpackPresent, nextBackpackPresent, sameStack)) {
 			stowInstalledPart(lastBackpack, BackpackPartItem.Kind.CORE);
 			stowInstalledLauncher(lastBackpack);
+			stowInstalledModule(lastBackpack);
 			tableInventory.setChanged();
 			broadcastChanges();
 		}
@@ -212,6 +216,14 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 						preserveLauncher = true;
 					}
 				}
+				if (BackpackUpgradeData.hasMissileBox(backpack)
+						&& !hasPart(BackpackPartItem.Kind.MISSILE_BOX)) {
+					insertPart(BackpackPartItem.Kind.MISSILE_BOX);
+				}
+				if (BackpackUpgradeData.hasGolemCapsule(backpack)
+						&& !hasPart(BackpackPartItem.Kind.GOLEM_CAPSULE)) {
+					insertPart(BackpackPartItem.Kind.GOLEM_CAPSULE);
+				}
 			}
 			int coreSlot = partSlot(BackpackPartItem.Kind.CORE);
 			ItemStack launcherPart = launcherPartStack();
@@ -222,6 +234,12 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 							: launcherPart.getItem() instanceof BackpackPartItem summonPart
 									&& summonPart.kind() == BackpackPartItem.Kind.SUMMON_ANTENNA
 									? BackpackUpgradeData.LauncherType.SUMMON_ANTENNA
+							: launcherPart.getItem() instanceof BackpackPartItem jumpPart
+									&& jumpPart.kind() == BackpackPartItem.Kind.JUMP_THRUSTER
+									? BackpackUpgradeData.LauncherType.JUMP_THRUSTER
+							: launcherPart.getItem() instanceof BackpackPartItem bannerPart
+									&& bannerPart.kind() == BackpackPartItem.Kind.BATTLE_BANNER
+									? BackpackUpgradeData.LauncherType.BATTLE_BANNER
 							: launcherPart.isEmpty() && preserveLauncher
 									? BackpackUpgradeData.launcherType(backpack)
 									: BackpackUpgradeData.LauncherType.PORTABLE;
@@ -239,6 +257,17 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 					backpack,
 					launcher ? LAUNCHER_PART_SLOT
 							: (preserveLauncher ? BackpackUpgradeData.launcherSlot(backpack) : -1));
+			ItemStack missilePart = tableInventory.getItem(
+					BackpackModificationTableBlockEntity.PART_SLOT_START + MISSILE_PART_SLOT);
+			boolean missileBox = missilePart.getItem() instanceof BackpackPartItem module
+					&& module.kind() == BackpackPartItem.Kind.MISSILE_BOX;
+			BackpackUpgradeData.setMissileBox(backpack, missileBox);
+			BackpackUpgradeData.setMissileBoxSlot(backpack, missileBox ? MISSILE_PART_SLOT : -1);
+			boolean golemCapsule = missilePart.getItem() instanceof BackpackPartItem capsule
+					&& capsule.kind() == BackpackPartItem.Kind.GOLEM_CAPSULE;
+			BackpackUpgradeData.setGolemCapsule(backpack, golemCapsule);
+			BackpackUpgradeData.setGolemCapsuleSlot(backpack,
+					golemCapsule ? GOLEM_CAPSULE_PART_SLOT : -1);
 			lastBackpack = backpack.copy();
 			tableInventory.setChanged();
 		} finally {
@@ -255,6 +284,26 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 				slot < BackpackModificationTableBlockEntity.SIZE; slot++) {
 			ItemStack stack = tableInventory.getItem(slot);
 			if (stack.getItem() instanceof BackpackPartItem part && part.isLauncherKind()) {
+				removeOne(tableInventory, slot, stack);
+				return;
+			}
+		}
+	}
+
+	/** 拆背包时把导弹舱/魔像空投舱部件退回槽位。 */
+	private void stowInstalledModule(ItemStack backpack) {
+		BackpackPartItem.Kind kind = BackpackUpgradeData.hasMissileBox(backpack)
+				? BackpackPartItem.Kind.MISSILE_BOX
+				: BackpackUpgradeData.hasGolemCapsule(backpack)
+						? BackpackPartItem.Kind.GOLEM_CAPSULE : null;
+		if (kind == null) {
+			return;
+		}
+		for (int slot = BackpackModificationTableBlockEntity.PART_SLOT_START;
+				slot < BackpackModificationTableBlockEntity.SIZE; slot++) {
+			ItemStack stack = tableInventory.getItem(slot);
+			if (stack.getItem() instanceof BackpackPartItem part
+					&& part.kind() == kind) {
 				removeOne(tableInventory, slot, stack);
 				return;
 			}
@@ -326,6 +375,8 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 		return insertPart(switch (type) {
 			case AUTO -> BackpackPartItem.Kind.AUTO_LAUNCHER;
 			case SUMMON_ANTENNA -> BackpackPartItem.Kind.SUMMON_ANTENNA;
+			case JUMP_THRUSTER -> BackpackPartItem.Kind.JUMP_THRUSTER;
+			case BATTLE_BANNER -> BackpackPartItem.Kind.BATTLE_BANNER;
 			default -> BackpackPartItem.Kind.LAUNCHER;
 		});
 	}
@@ -338,6 +389,7 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 		try {
 			ItemStack core = ItemStack.EMPTY;
 			ItemStack launcher = ItemStack.EMPTY;
+			ItemStack module = ItemStack.EMPTY;
 			for (int slot = BackpackModificationTableBlockEntity.PART_SLOT_START;
 					slot < BackpackModificationTableBlockEntity.SIZE; slot++) {
 				ItemStack stack = tableInventory.getItem(slot);
@@ -350,9 +402,15 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 					core = stack.copy();
 				} else if ((kind == BackpackPartItem.Kind.LAUNCHER
 						|| kind == BackpackPartItem.Kind.AUTO_LAUNCHER
-						|| kind == BackpackPartItem.Kind.SUMMON_ANTENNA)
+						|| kind == BackpackPartItem.Kind.SUMMON_ANTENNA
+						|| kind == BackpackPartItem.Kind.JUMP_THRUSTER
+						|| kind == BackpackPartItem.Kind.BATTLE_BANNER)
 						&& launcher.isEmpty()) {
 					launcher = stack.copy();
+				} else if ((kind == BackpackPartItem.Kind.MISSILE_BOX
+						|| kind == BackpackPartItem.Kind.GOLEM_CAPSULE)
+						&& module.isEmpty()) {
+					module = stack.copy();
 				} else {
 					owner.getInventory().placeItemBackInInventory(stack.copy());
 				}
@@ -364,6 +422,9 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 			tableInventory.setItem(
 					BackpackModificationTableBlockEntity.PART_SLOT_START + LAUNCHER_PART_SLOT,
 					launcher);
+			tableInventory.setItem(
+					BackpackModificationTableBlockEntity.PART_SLOT_START + MISSILE_PART_SLOT,
+					module);
 			tableInventory.setChanged();
 		} finally {
 			installing = false;
@@ -372,8 +433,11 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 	}
 
 	private static int fixedSlot(BackpackPartItem.Kind kind) {
-		return kind == BackpackPartItem.Kind.CORE
-				? CORE_PART_SLOT : LAUNCHER_PART_SLOT;
+		return switch (kind) {
+			case CORE -> CORE_PART_SLOT;
+			case MISSILE_BOX, GOLEM_CAPSULE -> MISSILE_PART_SLOT;
+			default -> LAUNCHER_PART_SLOT;
+		};
 	}
 
 	private static boolean acceptsPart(int slot, BackpackPartItem.Kind kind) {
@@ -382,8 +446,46 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 			case LAUNCHER_PART_SLOT ->
 					kind == BackpackPartItem.Kind.LAUNCHER
 							|| kind == BackpackPartItem.Kind.AUTO_LAUNCHER
-							|| kind == BackpackPartItem.Kind.SUMMON_ANTENNA;
+							|| kind == BackpackPartItem.Kind.SUMMON_ANTENNA
+							|| kind == BackpackPartItem.Kind.BATTLE_BANNER
+							|| kind == BackpackPartItem.Kind.JUMP_THRUSTER;
+			case MISSILE_PART_SLOT -> kind == BackpackPartItem.Kind.MISSILE_BOX
+					|| kind == BackpackPartItem.Kind.GOLEM_CAPSULE;
 			default -> false;
+		};
+	}
+
+	/** 第三格附加模块必须与已装发射器匹配：跳跃推进器→导弹舱，召唤天线→魔像空投舱。 */
+	private boolean upgradeSlotAccepts(int slot, BackpackPartItem.Kind kind) {
+		if (slot != MISSILE_PART_SLOT) {
+			return true;
+		}
+		return switch (kind) {
+			case MISSILE_BOX -> hasJumpThrusterInstalled();
+			case GOLEM_CAPSULE -> hasSummonAntennaInstalled();
+			default -> false;
+		};
+	}
+
+	private boolean hasJumpThrusterInstalled() {
+		return launcherType(launcherPartStack()) == BackpackUpgradeData.LauncherType.JUMP_THRUSTER;
+	}
+
+	private boolean hasSummonAntennaInstalled() {
+		return launcherType(launcherPartStack()) == BackpackUpgradeData.LauncherType.SUMMON_ANTENNA;
+	}
+
+	private static BackpackUpgradeData.LauncherType launcherType(ItemStack stack) {
+		if (!(stack.getItem() instanceof BackpackPartItem part)) {
+			return BackpackUpgradeData.LauncherType.NONE;
+		}
+		return switch (part.kind()) {
+			case AUTO_LAUNCHER -> BackpackUpgradeData.LauncherType.AUTO;
+			case SUMMON_ANTENNA -> BackpackUpgradeData.LauncherType.SUMMON_ANTENNA;
+			case JUMP_THRUSTER -> BackpackUpgradeData.LauncherType.JUMP_THRUSTER;
+			case BATTLE_BANNER -> BackpackUpgradeData.LauncherType.BATTLE_BANNER;
+			case LAUNCHER -> BackpackUpgradeData.LauncherType.PORTABLE;
+			default -> BackpackUpgradeData.LauncherType.NONE;
 		};
 	}
 
@@ -393,6 +495,14 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 			case LAUNCHER -> new ItemStack(TkGunServer.PORTABLE_LAUNCHER);
 			case AUTO_LAUNCHER -> new ItemStack(TkGunServer.AUTO_PORTABLE_LAUNCHER);
 			case SUMMON_ANTENNA -> new ItemStack(TkGunServer.SUMMON_ANTENNA);
+			case BATTLE_BANNER -> new ItemStack(
+					com.mechaniciancombat.registry.ModRegistries.WAR_BANNER_ITEM.get());
+			case JUMP_THRUSTER -> new ItemStack(
+					com.mechaniciancombat.registry.ModRegistries.JUMP_BACKPACK_THRUSTER.get());
+			case MISSILE_BOX -> new ItemStack(
+					com.mechaniciancombat.registry.ModRegistries.MISSILE_BOX.get());
+			case GOLEM_CAPSULE -> new ItemStack(
+					com.mechaniciancombat.registry.ModRegistries.GOLEM_DISPATCH_CAPSULE.get());
 		};
 	}
 

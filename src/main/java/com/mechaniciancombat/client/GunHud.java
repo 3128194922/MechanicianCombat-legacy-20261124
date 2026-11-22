@@ -23,6 +23,12 @@ public final class GunHud {
 			return;
 		}
 		int id = client.player.getId();
+		// 动能剑：没有弹药环，只在立场开启/散热时显示热量。
+		if (TkGun.isKineticSword(client.player)) {
+			renderKineticStance(context, client, id);
+			GunWarningHud.render(context);
+			return;
+		}
 		int left = GunClientState.roundsLeft(id);
 		boolean reloading = GunClientState.reloading(id);
 		String focusTag = GunClientState.focusText(id);
@@ -58,6 +64,27 @@ public final class GunHud {
 		}
 		AmmoSwitchHud.render(context);
 		GunWarningHud.render(context);
+	}
+
+	private static void renderKineticStance(GuiGraphics context, Minecraft client, int id) {
+		boolean active = GunClientState.kineticStance(id);
+		int heat = GunClientState.kineticHeatPercent(id);
+		boolean locked = GunClientState.kineticHeatLocked(id);
+		if (!active && !locked && heat <= 0) {
+			return;
+		}
+		String main = "热量槽：" + heat + "%";
+		String tag = active ? "立场" : "立场冷却";
+		int pad = 4;
+		int boxW = Math.max(client.font.width(main), client.font.width(tag)) + pad * 2;
+		int boxH = 26;
+		int x = context.guiWidth() - boxW - 6;
+		int y = context.guiHeight() - 74;
+		GuiNineSlice.ammoBackground(context, AMMO_INFO_TEXTURE,
+				x - 3, y - 3, boxW + 6, boxH + 6);
+		int colour = locked ? 0xFFFF5555 : (heat >= 75 ? 0xFFFFB060 : 0xFF9BE0FF);
+		context.drawString(client.font, main, x + pad, y + 4, colour, true);
+		context.drawString(client.font, tag, x + pad, y + 15, 0xFFC8C8C8, true);
 	}
 
 	private static String loadedMagazineText(int entityId, int left) {

@@ -12,10 +12,10 @@ final class CombatRollBridge {
 					TkGun.holdingGun(player), TkGunServer.state(player).state,
 					player.getName().getString());
 			player.removeEffect(net.minecraft.world.effect.MobEffects.MOVEMENT_SLOWDOWN);
-			if (!TkGun.holdingGun(player)) {
+			if (!TkGun.holdingGun(player) && !com.mechaniciancombat.item.MechanicianUndersuitItem.canUseArmorDodge(player)) {
 				return;
 			}
-			TkGunServer.onRollStarted(player);
+			TkGunServer.onRollStarted(player, direction);
 			var world = player.serverLevel();
 			for (int i = 0; i < 10; i++) {
 				double angle = i * Math.PI / 5.0;

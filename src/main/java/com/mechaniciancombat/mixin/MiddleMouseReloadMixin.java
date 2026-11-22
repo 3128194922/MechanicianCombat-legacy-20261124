@@ -22,7 +22,7 @@ public abstract class MiddleMouseReloadMixin {
 		Minecraft client = Minecraft.getInstance();
 		if (button != GLFW.GLFW_MOUSE_BUTTON_MIDDLE || action != GLFW.GLFW_PRESS
 				|| client.player == null || client.screen != null
-				|| !TkGun.holdingGun(client.player)) {
+				|| !TkGun.usesAmmoRing(client.player)) {
 			return;
 		}
 		// 显式绑定优先：中键若被玩家设为装填键或弹药环键，

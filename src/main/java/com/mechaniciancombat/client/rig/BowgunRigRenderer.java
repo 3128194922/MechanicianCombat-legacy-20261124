@@ -53,6 +53,9 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 	private static Vec3 lastMuzzlePos;
 	/** Recent animated locator position for each rendered player. */
 	private static final Map<Integer, LocatorSample> LOCATOR_POSITIONS = new HashMap<>();
+    private static final Map<Integer, LocatorSample> AIM_POSITIONS = new HashMap<>();
+	/** 灵魂锚锁链起点：动画后的左臂世界坐标。 */
+	private static final Map<Integer, LocatorSample> ARM_LEFT_POSITIONS = new HashMap<>();
 	private record LocatorSample(Vec3 position, long worldTime) {
 	}
 	/** 弹匣相关骨骼：打空后整组隐藏。 */
@@ -109,6 +112,9 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 	public BowgunRigRenderer(EntityRendererProvider.Context context) {
 		super(context, new BowgunRigModel(), BowgunRig.INSTANCE);
 		addRenderLayer(new BowgunGunLayer(this));
+        addRenderLayer(new BowgunEffectSkillLayer(this));
+		addRenderLayer(new BowgunCloseCombatEffectLayer(this));
+		addRenderLayer(new KineticSwordEnergyLayer(this));
 		addRenderLayer(new CombatBackpackRigLayer(this));
 		// 玩家本体、皮肤外层、盔甲、披风和 Curios 由 PlayerRenderer 的原版层绘制。
 		// 本 renderer 只输出枪骨架，外部 GeckoLib 盔甲继续走自己的 GeoArmorRenderer。
@@ -155,6 +161,9 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 		Entity renderedEntity = getCurrentEntity();
 		boolean currentFrame = !isReRender && renderedEntity != null;
 		boolean local = currentFrame && renderedEntity == Minecraft.getInstance().player;
+		if (currentFrame && KineticSwordEnergyEffect.isEnergyBone(name)) {
+			KineticSwordEnergyEffect.applyVisibility(bone, renderedEntity);
+		}
 		if (currentFrame && ROOT_BONE.equals(name)) {
 			lastAimPos = null;
 			lastMuzzlePos = null;
@@ -167,6 +176,11 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 		//     枪口焰 + 弹壳甩出 —— 那会变成"举枪空放一发"。所以这时候把**特效骨压掉**
 		//     （火焰平面/速度线/弹壳），只留端枪的姿势。
 		Entity poseEntity = getCurrentEntity();
+		// 近战特效平面：按客户端权威近战时钟决定这一步该不该显示。
+		// 必须在 super 之前写 scale，GeckoLib 才会把值记进这一帧的矩阵。
+		if (currentFrame && BowgunCloseCombatEffectLayer.isEffectBone(name)) {
+			BowgunCloseCombatEffectLayer.applyScheduledVisibility(bone, renderedEntity, partialTick);
+		}
 		// 是否开火必须是**全局 FIRE 状态**，不能乘上 `upper`：专注射击是全身动画，
 		// upper 层为空；上一版用 `upper && isFiring` 会把专注开火的枪口焰也误判成“没开火”。
 		boolean firing = isFiring(poseEntity);
@@ -256,6 +270,7 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 		if (currentFrame && AIM_BONE.equals(name)) {
 			org.joml.Vector3d wp = bone.getWorldPosition();
 			lastAimPos = new Vec3(wp.x, wp.y, wp.z);
+            AIM_POSITIONS.put(renderedEntity.getId(), new LocatorSample(lastAimPos, renderedEntity.level().getGameTime()));
 		}
 		if (currentFrame && MUZZLE_BONE.equals(name)) {
 			Matrix4f m = poseStack.last().pose();
@@ -361,6 +376,11 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 			LOCATOR_POSITIONS.put(renderedEntity.getId(), new LocatorSample(
 					new Vec3(position.x, position.y, position.z), renderedEntity.level().getGameTime()));
 		}
+		if (currentFrame && "arm_left".equals(name)) {
+			org.joml.Vector3d position = bone.getWorldPosition();
+			ARM_LEFT_POSITIONS.put(renderedEntity.getId(), new LocatorSample(
+					new Vec3(position.x, position.y, position.z), renderedEntity.level().getGameTime()));
+		}
 		if (chestBobTransform) {
 			poseStack.popPose();
 		}
@@ -376,6 +396,10 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 	}
 
 	/** Latest rendered gun locator, rejected when the model has not rendered recently. */
+    public static Vec3 aimPosition(int playerId) {
+        Minecraft client = Minecraft.getInstance(); LocatorSample sample = AIM_POSITIONS.get(playerId);
+        return client.level == null || sample == null || Math.abs(client.level.getGameTime() - sample.worldTime()) > 3L ? null : sample.position();
+    }
 	public static Vec3 locatorPosition(int playerId) {
 		Minecraft client = Minecraft.getInstance();
 		LocatorSample sample = LOCATOR_POSITIONS.get(playerId);
@@ -384,6 +408,17 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 			return null;
 		}
 		return sample.position;
+	}
+
+	/** 灵魂锚锁链起点（左臂动画后的世界坐标）；模型最近没有渲染时返回 null。 */
+	public static Vec3 armLeftPosition(int playerId) {
+		Minecraft client = Minecraft.getInstance();
+		LocatorSample sample = ARM_LEFT_POSITIONS.get(playerId);
+		if (client.level == null || sample == null
+				|| Math.abs(client.level.getGameTime() - sample.worldTime()) > 3L) {
+			return null;
+		}
+		return sample.position();
 	}
 
 	/**
@@ -421,7 +456,9 @@ public class BowgunRigRenderer extends GeoReplacedEntityRenderer<AbstractClientP
 				|| e.state == TkGun.State.SLIDE
 				|| e.state == TkGun.State.SLIDE_READY
 				|| e.state == TkGun.State.OVERHEAT
-				|| e.state == TkGun.State.OVER);
+				|| e.state == TkGun.State.OVER || e.state == TkGun.State.MELEE
+                || e.state == TkGun.State.FORTRESS_SKILL_LOAD || e.state == TkGun.State.FORTRESS_SKILL_READY_GATHER
+                || e.state == TkGun.State.FORTRESS_SKILL_GATHER || e.state == TkGun.State.FORTRESS_SKILL_HIT);
 	}
 
 	// 2026-10-17：**第四十二/四十三轮的 chest 俯仰补偿整段撤销**（用户："撤销 42 与 43 轮俯仰角的修正"）。

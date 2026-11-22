@@ -6,7 +6,6 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.Camera;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
-import org.joml.Quaternionf;
 import org.joml.Vector4f;
 
 /**
@@ -17,11 +16,7 @@ import org.joml.Vector4f;
  * （方块或生物）投影到屏幕上的位置，不是枪口本身。平时枪管斜着端在身侧 → 圈落在远处的墙上/地上；
  * 长按右键身体和枪管转向视角 → 圈会**收敛到准星上**，那就是"瞄准"的可视化。
  *
- * <p>⚠️ 屏幕正中的 **`- . -` 准星不在这里画** —— 那是 ShoulderSurfing 的 crosshair
- * （`crosshair_type = STATIC` 就是它画的原版式样）。我第一版自己画了一个，结果和它的叠在一起，
- * 用户看到的就是"`. ` 没在两横正中间"（2026-10-14 用户原话）。现在只画它画不出来的枪口圈。
- *
- * <p>第一人称不画（交回原版准星）。
+ * <p>中心 X 与落点圆圈同时显示；落点在画面外时圆圈贴近边缘指示方向。
  */
 public final class GunReticle {
 	/**
@@ -52,7 +47,7 @@ public final class GunReticle {
 		hitMarkerUntil = System.nanoTime() + HIT_MARKER_NANOS;
 	}
 
-	public static void render(GuiGraphics context) {
+	public static void render(GuiGraphics context, float partialTick) {
 		Minecraft client = Minecraft.getInstance();
 		if (client.player == null || client.level == null || client.options.hideGui
 				|| client.screen != null) {
@@ -62,34 +57,22 @@ public final class GunReticle {
 		if (!TkGun.holdingGun(client.player)) {
 			return;
 		}
-		if (client.options.getCameraType().isFirstPerson()) {
-			// 第一人称不画落点圈；越界方向箭头只在专注状态下提示，腰射不显示。
-			if (GunCamera.aiming(client) && GunCamera.aimOutsideCone()
-					&& GunClientState.focusish(client.player.getId())) {
-				drawLostDirectionArrow(context, GunCamera.aimOutsideSide());
-			}
+		// 动能剑没有枪口/落点，不画枪械准星圈。
+		if (TkGun.isKineticSword(client.player)) {
 			return;
 		}
-		// ⚠️ 2026-10-16 用户："这个着弹点正常情况下是不显示的，**只有在玩家长按右键的时候**它才显示。
-		//    你现在平常状态就显示，导致玩家模型在瞎转" → 圈圈只在**长按右键瞄准**时画。
-		if (!GunCamera.aiming(client)) {
-			if (FallbackShoulderCamera.isFallbackActive(client)) {
-				int centerX = context.guiWidth() / 2;
-				int centerY = context.guiHeight() / 2;
-				drawReticleX(context, centerX, centerY);
-				reticleScreenX = centerX;
-				reticleScreenY = centerY;
-				reticleVisible = true;
-			}
-			return;
-		}
-		if (GunCamera.aimOutsideCone()) {
+		int centerX = context.guiWidth() / 2;
+		int centerY = context.guiHeight() / 2;
+		drawMuzzleReticle(context);
+		drawReticleX(context, centerX, centerY);
+		reticleScreenX = centerX;
+		reticleScreenY = centerY;
+		reticleVisible = true;
+		if (GunCamera.aiming(client) && GunCamera.aimOutsideCone()) {
 			if (GunClientState.focusish(client.player.getId())) {
 				drawLostDirectionArrow(context, GunCamera.aimOutsideSide());
 			}
-			return;
 		}
-		drawMuzzleReticle(context);
 		drawHitCrossFlash(context);
 	}
 
@@ -153,16 +136,17 @@ public final class GunReticle {
 		}
 	}
 
-	/** 把**弹着点**世界坐标投影到屏幕上画圈（在相机身后 / 太靠边就不画）。 */
+	/** 把弹着点投影到屏幕上；尚未得到枪口数据时暂时使用屏幕中心。 */
 	private static void drawMuzzleReticle(GuiGraphics ctx) {
 		Minecraft client = Minecraft.getInstance();
-		Vec3 muzzle = GunCamera.impactPoint();
+		Vec3 muzzle = GunCamera.impactPointForRender(client);
 		if (muzzle == null) {
+			drawRing(ctx, ctx.guiWidth() / 2, ctx.guiHeight() / 2);
 			return;
 		}
 		Camera camera = client.gameRenderer.getMainCamera();
 		// FOV 要用**跟画面同一个**（含瞄准放大），否则圈圈会偏
-		double fov = client.options.fov().get() * GunCamera.fovScale();
+		double fov = GunCamera.renderedFovDegrees();
 		Matrix4f proj = client.gameRenderer.getProjectionMatrix(fov);
 		// 视图矩阵**照抄 WorldRenderer 里那一套**：Rx(pitch) * Ry(yaw+180)。
 		// ⚠️ 别用 `camera.getRotation().conjugate()` —— 那个四元数是给公告板用的，
@@ -180,20 +164,20 @@ public final class GunReticle {
 					r(camera.getPosition().z), r(v.w()), r(v.x() / Math.max(1.0E-6F, v.w())),
 					r(v.y() / Math.max(1.0E-6F, v.w())));
 		}
-		if (v.w() <= 1.0E-4F) {
-			return;                                  // 在相机背后（w<=0 = 不可见）
+		var point = ReticleLayout.precisePosition(v.x(), v.y(), v.w(), ctx.guiWidth(), ctx.guiHeight());
+		ctx.pose().pushPose();
+		ctx.pose().translate(point.x(), point.y(), 0);
+		drawRing(ctx, 0, 0);
+		ctx.pose().popPose();
+	}
+
+	private static void drawRing(GuiGraphics ctx, int sx, int sy) {
+		for (int i = 0; i < 64; i++) {
+			double a = 2.0D * Math.PI * i / 64.0D;
+			int x = sx + (int) Math.round(ReticleLayout.RADIUS * Math.cos(a));
+			int y = sy + (int) Math.round(ReticleLayout.RADIUS * Math.sin(a));
+			ctx.fill(x, y, x + 1, y + 1, 0xFFFFFFFF);
 		}
-		float ndcX = v.x() / v.w();
-		float ndcY = v.y() / v.w();
-		if (Math.abs(ndcX) > 1.4F || Math.abs(ndcY) > 1.4F) {
-			return;                                  // 出画了就别画半个圈在边上
-		}
-		int sx = Math.round((ndcX * 0.5F + 0.5F) * ctx.guiWidth());
-		int sy = Math.round((0.5F - ndcY * 0.5F) * ctx.guiHeight());
-		drawReticleX(ctx, sx, sy);
-		reticleScreenX = sx;
-		reticleScreenY = sy;
-		reticleVisible = true;
 	}
 
 	private static int debugTicks;

@@ -1,5 +1,6 @@
 package com.mechaniciancombat.client;
 
+import com.mechaniciancombat.TkGun;
 import com.mechaniciancombat.item.CombatBackpackItem;
 import com.mechaniciancombat.item.CombatBackpackAnimation;
 import com.mechaniciancombat.item.BackpackUpgradeData;
@@ -21,6 +22,9 @@ import org.joml.Vector3f;
 import org.joml.Vector4f;
 import software.bernie.geckolib.cache.object.BakedGeoModel;
 import software.bernie.geckolib.cache.object.GeoBone;
+import software.bernie.geckolib.cache.object.GeoCube;
+import software.bernie.geckolib.cache.object.GeoQuad;
+import software.bernie.geckolib.cache.object.GeoVertex;
 import software.bernie.geckolib.model.GeoModel;
 import software.bernie.geckolib.renderer.GeoItemRenderer;
 import software.bernie.geckolib.util.RenderUtils;
@@ -29,6 +33,14 @@ import java.util.List;
 
 /** Renders the wearable backpack at an already-transformed chest attachment point. */
 public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackpackItem> {
+	/** 跳跃推进器喷口火焰：作者给的 3 帧 16×16 动画贴图。 */
+	private static final ResourceLocation FLAME_TEXTURE =
+			TkGun.id("textures/entity/combat_backpack_flame.png");
+	/** 底模是 48×48 图集，火焰每帧只有 16×16 —— 采样时要放大 3 倍。 */
+	private static final float FLAME_UV_SCALE = 3.0F;
+	/** 当前这一遍是不是"只画火焰骨骼"的那一遍。 */
+	private boolean flamePass;
+
 	private static CombatBackpackGeoRenderer accessoryInstance;
 	private static CombatBackpackGeoRenderer rigInstance;
 	private static CombatBackpackGeoRenderer previewInstance;
@@ -50,6 +62,8 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 	private LivingEntity currentEntity;
 	private boolean suppressC3Cubes;
 	private boolean attachedCoreInstalled;
+	/** 当前这一遍是不是装了跳跃推进器（决定是否追加火焰 pass / 显示 jet 骨骼）。 */
+	private boolean attachedJumpThruster;
 	private BackpackUpgradeData.LauncherType attachedLauncherType =
 			BackpackUpgradeData.LauncherType.NONE;
 
@@ -100,6 +114,7 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 		this.attachedLauncherType = BackpackUpgradeData.canUseLauncher(stack)
                 ? BackpackUpgradeData.launcherType(stack) : BackpackUpgradeData.LauncherType.NONE;
         this.attachedCoreInstalled = BackpackUpgradeData.hasCore(stack);
+        this.attachedJumpThruster = BackpackUpgradeData.canUseJumpThruster(stack);
         CombatBackpackAnimation.beginModificationPreview();
 		try {
 			super.renderByItem(stack, ItemDisplayContext.GUI, matrices, consumers, light, overlay);
@@ -108,6 +123,7 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 			CombatBackpackAnimation.endModificationPreview();
 			this.attachedLauncherType = BackpackUpgradeData.LauncherType.NONE;
 			this.attachedCoreInstalled = false;
+			this.attachedJumpThruster = false;
 		}
 	}
 
@@ -124,17 +140,33 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 				? BackpackUpgradeData.launcherType(stack)
 				: BackpackUpgradeData.LauncherType.NONE;
 		this.attachedCoreInstalled = BackpackUpgradeData.hasCore(stack);
+		this.attachedJumpThruster = BackpackUpgradeData.canUseJumpThruster(stack);
 		this.renderPerspective = ItemDisplayContext.NONE;
 		try {
 			ResourceLocation texture = getTextureLocation(item);
 			RenderType layer = getRenderType(item, texture, consumers, tickDelta);
 			VertexConsumer buffer = consumers.getBuffer(layer);
 			defaultRender(matrices, item, consumers, layer, buffer, tickDelta, tickDelta, light);
+			// 第二遍：只画 *_flame 骨骼，换用作者的火焰动画贴图。
+			// GeoItemRenderer 会在一遍渲染后清掉这些字段，必须重新赋值。
+			if (this.attachedJumpThruster) {
+				this.animatable = item;
+				this.currentItemStack = stack;
+				this.currentEntity = entity;
+				this.renderPerspective = ItemDisplayContext.NONE;
+				this.flamePass = true;
+				RenderType flameLayer = RenderType.entityCutoutNoCull(FLAME_TEXTURE);
+				VertexConsumer flameBuffer = consumers.getBuffer(flameLayer);
+				defaultRender(matrices, item, consumers, flameLayer, flameBuffer,
+						tickDelta, tickDelta, light);
+			}
 		} finally {
+			this.flamePass = false;
 			CombatBackpackAnimation.clearRenderingPlayer();
 			this.currentEntity = null;
 			this.attachedLauncherType = BackpackUpgradeData.LauncherType.NONE;
 			this.attachedCoreInstalled = false;
+			this.attachedJumpThruster = false;
 			doPostRenderCleanup();
 		}
 	}
@@ -214,6 +246,22 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 				== BackpackUpgradeData.LauncherType.AUTO;
 		boolean summonLauncher = attachedLauncherType
 				== BackpackUpgradeData.LauncherType.SUMMON_ANTENNA;
+		boolean jumpThruster = attachedLauncherType
+				== BackpackUpgradeData.LauncherType.JUMP_THRUSTER;
+		boolean battleBanner = attachedLauncherType
+				== BackpackUpgradeData.LauncherType.BATTLE_BANNER;
+		if ((jumpThruster || battleBanner) && currentEntity != null) {
+			// 跳跃推进器 / 战旗是作者手绘的状态动画，必须手动采样写骨骼：
+			// 依赖物品动画管理器的 tick 归属在本地/远端玩家共用渲染器时不稳定。
+			double seconds = CombatBackpackClientState.animationAgeTicks(
+					currentEntity.getId(), tickDelta) / 20.0D;
+			CombatBackpackPoseAnimation.apply(bone,
+					CombatBackpackAnimation.phase(currentEntity.getId()), seconds, jumpThruster);
+			CombatBackpackPoseAnimation.applyMissileOverlay(bone,
+					CombatBackpackAnimation.missilePhase(currentEntity.getId()),
+					CombatBackpackClientState.missileAnimationAgeTicks(
+							currentEntity.getId(), tickDelta) / 20.0D);
+		}
 		Quaternionf aimRotation = null;
 		if (currentEntity != null && launcherInstalled
 				&& CombatBackpackAnimation.phase(currentEntity.getId())
@@ -236,6 +284,10 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 					bone.setHidden(!autoLauncher);
 			case "summon_C1", "summon_C2", "summon_C3", "summon_locator" ->
 					bone.setHidden(!summonLauncher);
+			// 跳跃推进器：机体与三处喷口火焰只在装了推进器时显示。
+			case "jet_F", "jet_F2", "jet_right", "jet_left" -> bone.setHidden(!jumpThruster);
+			case "jet_F2_flame", "jet_right_flame", "jet_left_flame" ->
+					bone.setHidden(!jumpThruster);
 			default -> {
 			}
 		}
@@ -272,6 +324,11 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 	public void renderCubesOfBone(PoseStack matrices, GeoBone bone, VertexConsumer buffer,
 								  int packedLight, int packedOverlay,
 								  float red, float green, float blue, float alpha) {
+		// 火焰骨骼只在火焰 pass 画，机体骨骼只在机体 pass 画 —— 两遍互不重复。
+		boolean flameBone = bone.getName().endsWith("_flame");
+		if (flamePass != flameBone) {
+			return;
+		}
 		boolean autoLauncher = attachedLauncherType
 				== BackpackUpgradeData.LauncherType.AUTO;
 		boolean summonLauncher = attachedLauncherType == BackpackUpgradeData.LauncherType.SUMMON_ANTENNA;
@@ -280,6 +337,53 @@ public final class CombatBackpackGeoRenderer extends GeoItemRenderer<CombatBackp
 		}
 		super.renderCubesOfBone(matrices, bone, buffer, packedLight, packedOverlay,
 				red, green, blue, alpha);
+	}
+
+	@Override
+	public void renderCube(PoseStack matrices, GeoCube cube, VertexConsumer buffer,
+						   int packedLight, int packedOverlay,
+						   float red, float green, float blue, float alpha) {
+		if (flamePass) {
+			// 火焰贴图是 16×16 单帧，底模图集是 48×48 —— UV 放大 3 倍才落在正确区域，
+			// 并且用全亮，避免夜里喷口火焰被压暗。
+			super.renderCube(matrices, scaleFlameUvs(cube), buffer,
+					net.minecraft.client.renderer.LightTexture.FULL_BRIGHT, packedOverlay,
+					red, green, blue, alpha);
+			return;
+		}
+		super.renderCube(matrices, cube, buffer, packedLight, packedOverlay,
+				red, green, blue, alpha);
+	}
+
+	@Override
+	public void updateAnimatedTextureFrame(CombatBackpackItem animatable) {
+		if (flamePass) {
+			// GeckoLib 才持有动画贴图的当前帧；普通 entity RenderType 只会绑第 0 帧。
+			software.bernie.geckolib.cache.texture.AnimatableTexture.setAndUpdate(FLAME_TEXTURE);
+			return;
+		}
+		super.updateAnimatedTextureFrame(animatable);
+	}
+
+	private static GeoCube scaleFlameUvs(GeoCube cube) {
+		GeoQuad[] source = cube.quads();
+		GeoQuad[] scaled = new GeoQuad[source.length];
+		for (int i = 0; i < source.length; i++) {
+			GeoQuad quad = source[i];
+			if (quad == null) {
+				continue;
+			}
+			GeoVertex[] vertices = quad.vertices();
+			GeoVertex[] updated = new GeoVertex[vertices.length];
+			for (int j = 0; j < vertices.length; j++) {
+				GeoVertex vertex = vertices[j];
+				updated[j] = vertex.withUVs(vertex.texU() * FLAME_UV_SCALE,
+						vertex.texV() * FLAME_UV_SCALE);
+			}
+			scaled[i] = new GeoQuad(updated, quad.normal(), quad.direction());
+		}
+		return new GeoCube(scaled, cube.pivot(), cube.rotation(), cube.size(),
+				cube.inflate(), cube.mirror());
 	}
 
 	private void renderC3Independently(PoseStack matrices, GeoBone bone,

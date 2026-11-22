@@ -19,6 +19,9 @@ import net.minecraft.core.particles.SimpleParticleType;
 public class EnergyParticle extends TextureSheetParticle {
 	private final SpriteSet provider;
 	private final boolean fade;
+    private int attachedPlayerId = -1;
+    private String attachedLocator = "aim";
+    private static volatile SpriteSet activeProvider;
 
 	protected EnergyParticle(ClientLevel world, double x, double y, double z,
 							 SpriteSet provider, int lifetime, float scale, boolean fade) {
@@ -36,8 +39,13 @@ public class EnergyParticle extends TextureSheetParticle {
 	}
 
 	@Override
-	public void tick() {
-		super.tick();
+    public void tick() {
+        if (attachedPlayerId >= 0) {
+            var point = "aim".equals(attachedLocator) ? com.mechaniciancombat.client.rig.BowgunRigRenderer.aimPosition(attachedPlayerId)
+                    : com.mechaniciancombat.client.rig.BowgunRigRenderer.locatorPosition(attachedPlayerId);
+            if (point != null) setPos(point.x,point.y,point.z);
+        }
+        super.tick();
 		this.setSpriteFromAge(this.provider);      // 逐帧翻页（寿命归一化）
 		if (this.fade) {
 			float life = (float) this.age / (float) this.lifetime;
@@ -57,6 +65,7 @@ public class EnergyParticle extends TextureSheetParticle {
 
 	/** 枪口：短促一团能量。 */
 	public record MuzzleFactory(SpriteSet provider) implements ParticleProvider<SimpleParticleType> {
+        public MuzzleFactory { activeProvider = provider; }
 		@Override
 		public EnergyParticle createParticle(SimpleParticleType type, ClientLevel world,
 											 double x, double y, double z,
@@ -65,6 +74,13 @@ public class EnergyParticle extends TextureSheetParticle {
 		}
 	}
 
+    public static boolean spawnAttached(net.minecraft.world.entity.Entity player, net.minecraft.world.phys.Vec3 pos, String locator) {
+        var client=net.minecraft.client.Minecraft.getInstance(); var provider=activeProvider;
+        if (player==null || pos==null || client.level==null || provider==null) return false;
+        var particle=new EnergyParticle(client.level,pos.x,pos.y,pos.z,provider,10,1.25F,true);
+        particle.attachedPlayerId=player.getId(); particle.attachedLocator=locator==null ? "locator" : locator;
+        client.particleEngine.add(particle); return true;
+    }
 	/** 命中：大一圈、带淡出。 */
 	public record HitFactory(SpriteSet provider) implements ParticleProvider<SimpleParticleType> {
 		@Override
@@ -100,7 +116,7 @@ public class EnergyParticle extends TextureSheetParticle {
 		public EnergyParticle createParticle(SimpleParticleType type, ClientLevel world,
 											 double x, double y, double z,
 											 double vx, double vy, double vz) {
-			return new EnergyParticle(world, x, y, z, this.provider, 10, 0.55F, true);
+			return new EnergyParticle(world, x, y, z, this.provider, 10, 2.0F, true);
 		}
 	}
 

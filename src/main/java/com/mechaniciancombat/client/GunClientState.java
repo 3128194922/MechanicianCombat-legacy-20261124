@@ -3,6 +3,8 @@ package com.mechaniciancombat.client;
 import com.mechaniciancombat.CombatRollHook;
 import com.mechaniciancombat.GunStateMachine;
 import com.mechaniciancombat.TkGun;
+import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
 import com.mechaniciancombat.net.GunStatePayload;
 
 import java.util.HashMap;
@@ -17,6 +19,25 @@ import java.util.Map;
 public final class GunClientState {
 	public static final class Entry {
 		public TkGun.State state = TkGun.State.IDLE;
+        public boolean meleeDash, meleeReturning, meleeDashReturn, meleeReturnRun, meleeHoldOver, fortressSlide, airborneIdle;
+		/** 动能剑：双段 draft / 冲刺 ATK_5 / 跑跳 / 收势。 */
+		public boolean kineticDraft, kineticAccelerationAttack, kineticRunJump, kineticReturn;
+		/** 动能剑立场是否开启（右键切换）。 */
+		public boolean kineticStance;
+		/** 动能剑立场热量 0..100（复用火炮热量槽显示）。 */
+		public int kineticHeat;
+		/** 翻滚/滑铲触发的六连斩：客户端按 2 倍速播放 GS_ATK_1..6。 */
+		public boolean kineticRollCombo;
+		/**
+		 * 动能剑落地后的收势窗口（客户端 tick 截止值）。
+		 *
+		 * <p>上游 r993/r994：`SKILL_JUMP → IDLE` 之后要先停在 `fall_back-idle` 6 tick，
+		 * 再回到 idle/跑动；否则落地那一帧会直接被 `GS_run`/`idle` 顶掉，
+		 * 看起来就是"落地没有收势、腿瞬间弹回站姿"。
+		 */
+		public int kineticSwordLandingIdleUntil;
+		/** 动能剑最近一次近战片段名（上游用来判断"余韵还在不在"）。 */
+		public String lastMeleeAnimation;
 		public int elapsed;
 		public int total;
 		public int heat;
@@ -88,6 +109,13 @@ public final class GunClientState {
 	private static final Map<Integer, Entry> ENTRIES = new HashMap<>();
 	/** 客户端 tick 计数（只给 {@link Entry#holdUntil} 用）。 */
 	private static int ticks;
+	/** 空格快速六连斩的本地窗口（截止 tick）：用于放开移动减速/锁输入。 */
+	private static int kineticComboUntil;
+	/** 空格快速六连斩的锁移动窗口（截止 tick）：期间禁止移动、禁止改变朝向。 */
+	private static int kineticComboLockUntil;
+	/** 空格快速六连斩期间锁定的身体朝向。 */
+	private static float kineticComboLockedYaw;
+	private static boolean kineticComboYawLocked;
 	/** FIRE 状态结束后还保持射击尾帧多少 tick（等下一个状态包）。 */
 	public static final int FIRE_HOLD_GRACE = 10;
 
@@ -102,6 +130,35 @@ public final class GunClientState {
 			e.total = payload.ticks();
 			e.elapsed = 0;
 			e.shotSeq = payload.shotSeq();
+		}
+        e.meleeDash = payload.meleeDash(); e.meleeReturning = payload.meleeReturning();
+        e.meleeDashReturn = payload.meleeDashReturn(); e.meleeReturnRun = payload.meleeReturnRun();
+        e.meleeHoldOver = payload.meleeHoldOver(); e.fortressSlide = payload.fortressSlide(); e.airborneIdle = payload.airborneIdle();
+		e.kineticDraft = payload.kineticDraft();
+		e.kineticAccelerationAttack = payload.kineticAccelerationAttack();
+		e.kineticRunJump = payload.kineticRunJump();
+		e.kineticReturn = payload.kineticReturn();
+		e.kineticStance = payload.kineticStance();
+		e.kineticHeat = Math.max(0, Math.min(100, payload.kineticHeat()));
+		boolean wasKineticCombo = e.kineticRollCombo;
+		e.kineticRollCombo = payload.kineticRollCombo();
+		if (e.kineticRollCombo && isLocalPlayer(payload.playerId())) {
+			// 服务端确认连斩后延长本地锁，覆盖状态包往返和最后一段收势。
+			int lockTicks = Math.max(1, payload.ticks()) + 4;
+			kineticComboUntil = Math.max(kineticComboUntil, ticks + lockTicks);
+			kineticComboLockUntil = Math.max(kineticComboLockUntil, ticks + lockTicks);
+			ensureKineticComboLockedYaw();
+		} else if (wasKineticCombo && isLocalPlayer(payload.playerId())) {
+			// 服务端已结束连斩：立即恢复转向，不必等本地兜底窗口。
+			kineticComboUntil = 0;
+			kineticComboLockUntil = 0;
+			kineticComboYawLocked = false;
+		}
+		// 动能剑：落地那一帧开 6 tick 的收势窗口（上游 r993/r994 的 `fall_back-idle`）。
+		if (previousState == TkGun.State.SKILL_JUMP && newState == TkGun.State.IDLE) {
+			e.kineticSwordLandingIdleUntil = ticks + 6;
+		} else if (newState == TkGun.State.SKILL_JUMP) {
+			e.kineticSwordLandingIdleUntil = 0;
 		}
 		e.heat = payload.heat();
 		e.shotIndex = Math.max(1, Math.min(TkGun.SHOT_ANIM_MAX, payload.shotIndex()));
@@ -126,6 +183,13 @@ public final class GunClientState {
 			e.readyHoldAnimation = null;
 		}
 		boolean enteredRoll = newState == TkGun.State.ROLL && previousState != TkGun.State.ROLL;
+		if (isLocalPlayer(payload.playerId())
+				&& (previousState == TkGun.State.ROLL || previousState == TkGun.State.ROLL_TO_IDLE)
+				&& newState != TkGun.State.ROLL && newState != TkGun.State.ROLL_TO_IDLE) {
+			// 翻滚期间身体朝向被对齐到翻滚方向；结束时恢复相机朝向，
+			// 否则后滚后按 S 会被身体朝向反转成向前移动。
+			restoreCameraHeading();
+		}
 		e.dashing = payload.dashing();
 		e.dashUntil = payload.dashTicks() > 0 ? ticks + payload.dashTicks() : 0;
 		e.magAmmo = payload.magAmmo();
@@ -180,6 +244,8 @@ public final class GunClientState {
 				|| e.state == TkGun.State.SLIDE || e.state == TkGun.State.SLIDE_READY) {
 			return false;
 		}
+        if (skillBlocksDodge(e)) return false;
+        if (e.state == TkGun.State.MELEE && e.meleeDashReturn) return true;
 		if (ticks < e.localDodgeLockUntil) {
 			return false;
 		}
@@ -190,6 +256,7 @@ public final class GunClientState {
 	/** 本地按下翻滚键时先锁一帧 ROLL；服务端状态包到达后会覆盖这份预测。 */
 	public static void beginLocalRoll(int entityId) {
 		Entry e = ENTRIES.computeIfAbsent(entityId, k -> new Entry());
+        if (skillBlocksDodge(e)) return;
 		// 专注状态等待服务端权威 ROLL 包，避免被冷却拒绝时先播放一段假翻滚。
 		if (e.state == TkGun.State.AIM || e.state == TkGun.State.AIM_FAST
 				|| e.state == TkGun.State.AIM_ROLL || e.state == TkGun.State.AIM_SLIDE) {
@@ -215,7 +282,8 @@ public final class GunClientState {
 
 	public static void tickAll() {
 		ticks++;
-		ENTRIES.values().forEach(e -> {
+		ENTRIES.forEach((id, e) -> {
+            if (MeleeImpactClientState.freezesAnimation(id) && e.state == TkGun.State.MELEE) return;
 			if (e.active()) {
 				e.elapsed++;
 				if (e.predictedRoll && ++e.predictedRollTicks > 4) {
@@ -278,6 +346,13 @@ public final class GunClientState {
 		e.readyHoldAnimation = null;
 		e.nextDodgeSlide = false;
 		e.localDodgeLockUntil = 0;
+		e.kineticSwordLandingIdleUntil = 0;
+		e.lastMeleeAnimation = null;
+		e.kineticRollCombo = false;
+		kineticComboUntil = 0;
+		kineticComboLockUntil = 0;
+		kineticComboYawLocked = false;
+		kineticComboLockedYaw = 0.0F;
 	}
 
 	/** 状态 -> 要播的动画名（null = 这一帧交给别的 mod 的层 / 别的逻辑）。 */
@@ -456,12 +531,23 @@ public final class GunClientState {
 	}
 
 	/** Combat Roll may not start a second physical dash while the gun sequence owns dodge input. */
+    private static boolean skillBlocksDodge(Entry e) {
+        return e.state == TkGun.State.SKILL_JUMP || e.state == TkGun.State.FALL_ATTACK || e.state == TkGun.State.FALL_ATTACK_RECOVERY
+                || e.state == TkGun.State.FORTRESS_SKILL_LOAD || e.state == TkGun.State.FORTRESS_SKILL_READY_GATHER
+                || e.state == TkGun.State.FORTRESS_SKILL_GATHER || (e.state == TkGun.State.FORTRESS_SKILL_HIT && e.elapsed < 10)
+                || (e.state == TkGun.State.MELEE && !e.meleeDashReturn);
+    }
 	public static boolean combatRollSuppressed(int entityId) {
 		Entry e = ENTRIES.get(entityId);
 		if (e == null) {
 			return false;
 		}
+        if (skillBlocksDodge(e)) return true;
+        if (e.state == TkGun.State.MELEE && e.meleeDashReturn) return false;
 		if (ticks < e.localDodgeLockUntil) {
+			return true;
+		}
+		if (e.nextDodgeSlide && !e.focus && ticks < e.dashUntil) {
 			return true;
 		}
 		return switch (e.state) {
@@ -491,6 +577,89 @@ public final class GunClientState {
 			return 0;
 		}
 		return Math.max(0, Math.min(100, Math.round(e.heat)));
+	}
+
+	/** 动能剑立场是否开启。 */
+	public static boolean kineticStance(int entityId) {
+		Entry e = ENTRIES.get(entityId);
+		return e != null && e.kineticStance;
+	}
+
+	/** 本地记录一次空格快速六连斩，覆盖服务端状态包往返的那几 tick。 */
+	public static void beginKineticComboLocal() {
+		// 先锁一个短窗口，服务端确认后每个连斩段会继续续期；若服务端拒绝则不会长时间卡住。
+		int pendingTicks = 12;
+		kineticComboUntil = ticks + pendingTicks;
+		kineticComboLockUntil = ticks + pendingTicks;
+		Minecraft client = Minecraft.getInstance();
+		if (client.player != null) {
+			kineticComboLockedYaw = client.player.getYRot();
+			kineticComboYawLocked = true;
+		}
+	}
+
+	public static boolean kineticComboActive(int entityId) {
+		Entry entry = ENTRIES.get(entityId);
+		return (entry != null && entry.kineticRollCombo)
+				|| (isLocalPlayer(entityId) && ticks < kineticComboUntil);
+	}
+
+	/** 空格快速六连斩期间：锁定移动与朝向。 */
+	public static boolean kineticComboLocksMovement(int entityId) {
+		Entry entry = ENTRIES.get(entityId);
+		boolean locked = (entry != null && entry.kineticRollCombo)
+				|| (isLocalPlayer(entityId) && ticks < kineticComboLockUntil);
+		if (!locked) {
+			kineticComboYawLocked = false;
+		}
+		return locked;
+	}
+
+	private static boolean isLocalPlayer(int entityId) {
+		Minecraft client = Minecraft.getInstance();
+		return client.player != null && client.player.getId() == entityId;
+	}
+
+	private static void restoreCameraHeading() {
+		Minecraft client = Minecraft.getInstance();
+		if (client.player == null || client.gameRenderer == null) {
+			return;
+		}
+		// alignForRoll 保留了头部/相机 yaw；用它恢复身体，避免第一人称下又被翻滚方向覆盖。
+		float yaw = Mth.wrapDegrees(client.player.getYHeadRot());
+		client.player.setYRot(yaw);
+		client.player.setYBodyRot(yaw);
+		client.player.setYHeadRot(yaw);
+		client.player.yRotO = yaw;
+	}
+
+	/** 空格快速六连斩期间应保持的身体朝向。 */
+	public static float kineticComboLockedYaw() {
+		return kineticComboLockedYaw;
+	}
+
+	/** 服务端状态到达时若尚未记录朝向，用当前朝向补上。 */
+	public static void ensureKineticComboLockedYaw() {
+		Minecraft client = Minecraft.getInstance();
+		if (client.player != null && !kineticComboYawLocked) {
+			kineticComboLockedYaw = client.player.getYRot();
+			kineticComboYawLocked = true;
+		}
+	}
+
+	/** 动能剑立场热量 0..100；未收到状态时按 0 处理。 */
+	public static int kineticHeatPercent(int entityId) {
+		Entry e = ENTRIES.get(entityId);
+		if (e == null) {
+			return 0;
+		}
+		return Math.max(0, Math.min(100, e.kineticHeat));
+	}
+
+	/** 立场是否在“热量已满、正在散热”的锁定期内。 */
+	public static boolean kineticHeatLocked(int entityId) {
+		Entry e = ENTRIES.get(entityId);
+		return e != null && e.kineticHeat >= 100;
 	}
 
 	/** Registry id of the ammo currently loaded into a hip-fire magazine. */
