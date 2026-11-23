@@ -15,10 +15,17 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
-/** C3 灵魂锁链：命中后向附近目标依次传递衰减伤害，并广播锁链特效。 */
+/**
+ * C3 灵魂锁链：命中后把附近目标连成一条持续 5 秒的锁链。
+ *
+ * <p>锁链存在期间，任何一名成员受到的伤害都会按距离衰减传递给其他成员；
+ * 客户端按实体实时位置绘制链条，因此成员移动时链条会一直跟随。
+ */
 public final class SoulChainAbility {
 	private static final double LINK_DIAMETER = 10.0D;
 	private static final double LINK_RADIUS = LINK_DIAMETER * 0.5D;
@@ -28,14 +35,36 @@ public final class SoulChainAbility {
 	private static final float MINIMUM_DAMAGE_FACTOR = 0.50F;
 	private static final int NORMAL_MAX_TARGETS = 3;
 	private static final int MARKED_MAX_TARGETS = 6;
-	private static final int EFFECT_TICKS = 30;
+	/** 链接持续时间：5 秒 = 100 tick。 */
+	public static final int LINK_TICKS = 100;
 	private static boolean resolving;
+	private static long lastCleanupTick = -1L;
+	private static final List<Link> LINKS = new ArrayList<>();
+
+	private record Link(List<UUID> members, long expiresAt, boolean marked) {
+	}
 
 	private SoulChainAbility() {
 	}
 
 	public static void register() {
-		net.minecraftforge.common.MinecraftForge.EVENT_BUS.addListener(SoulChainAbility::onLivingDamage);
+		net.minecraftforge.common.MinecraftForge.EVENT_BUS.addListener(
+				SoulChainAbility::onLivingDamage);
+		net.minecraftforge.common.MinecraftForge.EVENT_BUS.addListener(
+				SoulChainAbility::onServerTick);
+	}
+
+	private static void onServerTick(net.minecraftforge.event.TickEvent.ServerTickEvent event) {
+		if (event.phase != net.minecraftforge.event.TickEvent.Phase.END
+				|| event.getServer() == null) {
+			return;
+		}
+		long now = event.getServer().overworld().getGameTime();
+		if (now == lastCleanupTick) {
+			return;
+		}
+		lastCleanupTick = now;
+		LINKS.removeIf(link -> link.expiresAt() <= now);
 	}
 
 	private static void onLivingDamage(net.minecraftforge.event.entity.living.LivingDamageEvent event) {
@@ -43,16 +72,22 @@ public final class SoulChainAbility {
 		DamageSource source = event.getSource();
 		float damageTaken = event.getAmount();
 		if (resolving || damageTaken <= 0.0F
-				|| !(source.getEntity() instanceof ServerPlayer player)) {
+				|| !(target.level() instanceof ServerLevel level)) {
+			return;
+		}
+		// 1) 已有锁链：把这次伤害传给链上的其他成员。
+		boolean linked = propagate(level, target, source, damageTaken);
+		if (linked || containsMember(target.getUUID())) {
+			return;
+		}
+		// 2) 只有 C3 玩家造成的新命中才会开始一条新锁链。
+		if (!(source.getEntity() instanceof ServerPlayer player)) {
 			return;
 		}
 		ItemStack chest = ArmorUpgradeData.equippedChestplate(player);
 		boolean marked = SoulAnchorMarks.isMarked(target);
 		if (!ArmorUpgradeData.hasPart(chest, ArmorPartItem.Kind.C3)
 				|| !marked && player.getRandom().nextDouble() >= LINK_CHANCE) {
-			return;
-		}
-		if (!(target.level() instanceof ServerLevel level)) {
 			return;
 		}
 		double radius = marked ? LINK_RADIUS * 2.0D : LINK_RADIUS;
@@ -75,6 +110,7 @@ public final class SoulChainAbility {
 		if (targets.size() < 2) {
 			return;
 		}
+		// 起始命中立即按 70%/50% 传递一次；之后 5 秒内的任何伤害继续沿锁链传递。
 		resolving = true;
 		try {
 			for (int index = 1; index < targets.size(); index++) {
@@ -87,18 +123,69 @@ public final class SoulChainAbility {
 		} finally {
 			resolving = false;
 		}
-		List<SoulChainPayload.ChainNode> points = new ArrayList<>(targets.size());
-		for (LivingEntity linked : targets) {
-			Vec3 point = effectPoint(linked);
-			points.add(new SoulChainPayload.ChainNode(linked.getId(),
-					point.x, point.y, point.z));
-		}
-		SoulChainPayload payload = new SoulChainPayload(List.copyOf(points), EFFECT_TICKS);
-		for (ServerPlayer viewer : level.players()) {
-			if (viewer.distanceToSqr(target.position()) <= 64.0D * 64.0D) {
-				ModNetwork.send(viewer, payload);
+		long now = level.getGameTime();
+		List<UUID> members = targets.stream().map(Entity::getUUID).toList();
+		LINKS.add(new Link(members, now + LINK_TICKS, marked));
+		broadcast(level, target, targets);
+	}
+
+	/** 把命中伤害沿所有包含该实体的锁链传递一次；返回是否命中过锁链。 */
+	private static boolean propagate(ServerLevel level, LivingEntity hit,
+									 DamageSource source, float damage) {
+		List<Link> links = new ArrayList<>();
+		for (Link link : LINKS) {
+			if (link.members().contains(hit.getUUID())) {
+				links.add(link);
 			}
 		}
+		if (links.isEmpty()) {
+			return false;
+		}
+		resolving = true;
+		try {
+			Set<UUID> alreadyHit = new HashSet<>();
+			alreadyHit.add(hit.getUUID());
+			for (Link link : links) {
+				int hitIndex = link.members().indexOf(hit.getUUID());
+				for (int index = 0; index < link.members().size(); index++) {
+					UUID memberId = link.members().get(index);
+					if (alreadyHit.contains(memberId)) {
+						continue;
+					}
+					LivingEntity member = findLiving(level, memberId);
+					if (member == null || !member.isAlive()) {
+						continue;
+					}
+					int distance = Math.abs(index - hitIndex);
+					float factor = link.marked()
+							? Math.max(MINIMUM_DAMAGE_FACTOR, 0.70F - 0.10F * (distance - 1))
+							: distance == 1 ? SECONDARY_DAMAGE : TERTIARY_DAMAGE;
+					member.hurt(source, damage * factor);
+					alreadyHit.add(memberId);
+				}
+			}
+		} finally {
+			resolving = false;
+		}
+		return true;
+	}
+
+	private static boolean containsMember(UUID uuid) {
+		for (Link link : LINKS) {
+			if (link.members().contains(uuid)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static LivingEntity findLiving(ServerLevel level, UUID uuid) {
+		net.minecraft.world.entity.player.Player player = level.getPlayerByUUID(uuid);
+		if (player != null) {
+			return player;
+		}
+		Entity entity = level.getEntities().get(uuid);
+		return entity instanceof LivingEntity living ? living : null;
 	}
 
 	private static LivingEntity nearest(ServerLevel level, LivingEntity center,
@@ -116,6 +203,22 @@ public final class SoulChainAbility {
 				.stream()
 				.min(Comparator.comparingDouble(entity -> entity.distanceToSqr(position)))
 				.orElse(null);
+	}
+
+	private static void broadcast(ServerLevel level, LivingEntity anchor,
+								  List<LivingEntity> members) {
+		List<SoulChainPayload.ChainNode> points = new ArrayList<>(members.size());
+		for (LivingEntity linked : members) {
+			Vec3 point = effectPoint(linked);
+			points.add(new SoulChainPayload.ChainNode(linked.getId(),
+					point.x, point.y, point.z));
+		}
+		SoulChainPayload payload = new SoulChainPayload(List.copyOf(points), LINK_TICKS);
+		for (ServerPlayer viewer : level.players()) {
+			if (viewer.distanceToSqr(anchor.position()) <= 64.0D * 64.0D) {
+				ModNetwork.send(viewer, payload);
+			}
+		}
 	}
 
 	private static Vec3 effectPoint(Entity entity) {

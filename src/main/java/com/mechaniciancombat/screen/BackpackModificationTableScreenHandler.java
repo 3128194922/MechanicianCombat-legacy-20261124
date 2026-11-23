@@ -38,6 +38,8 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 	public static final int LAUNCHER_PART_SLOT = 1;
 	public static final int MISSILE_PART_SLOT = 3;
 	public static final int GOLEM_CAPSULE_PART_SLOT = 3;
+	/** 下方两个空槽都接受附加模块，避免玩家把模块放进“另一个空槽”时被静默拒绝。 */
+	private static final int[] MODULE_PART_SLOTS = {2, 3};
 
 	private static final int[][] PART_SLOT_POSITIONS = {
 			{8, 30},
@@ -257,13 +259,17 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 					backpack,
 					launcher ? LAUNCHER_PART_SLOT
 							: (preserveLauncher ? BackpackUpgradeData.launcherSlot(backpack) : -1));
-			ItemStack missilePart = tableInventory.getItem(
-					BackpackModificationTableBlockEntity.PART_SLOT_START + MISSILE_PART_SLOT);
-			boolean missileBox = missilePart.getItem() instanceof BackpackPartItem module
+			ItemStack missilePart = modulePartStack();
+			// 附加模块必须和当前发射器类型匹配；拆掉发射器后不能残留“已安装”状态。
+			boolean missileBox = launcher
+					&& launcherType == BackpackUpgradeData.LauncherType.JUMP_THRUSTER
+					&& missilePart.getItem() instanceof BackpackPartItem module
 					&& module.kind() == BackpackPartItem.Kind.MISSILE_BOX;
 			BackpackUpgradeData.setMissileBox(backpack, missileBox);
 			BackpackUpgradeData.setMissileBoxSlot(backpack, missileBox ? MISSILE_PART_SLOT : -1);
-			boolean golemCapsule = missilePart.getItem() instanceof BackpackPartItem capsule
+			boolean golemCapsule = launcher
+					&& launcherType == BackpackUpgradeData.LauncherType.SUMMON_ANTENNA
+					&& missilePart.getItem() instanceof BackpackPartItem capsule
 					&& capsule.kind() == BackpackPartItem.Kind.GOLEM_CAPSULE;
 			BackpackUpgradeData.setGolemCapsule(backpack, golemCapsule);
 			BackpackUpgradeData.setGolemCapsuleSlot(backpack,
@@ -351,7 +357,30 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 				? stack : ItemStack.EMPTY;
 	}
 
+	/** 下方两个空槽任选其一放附加模块。 */
+	private ItemStack modulePartStack() {
+		for (int slot : MODULE_PART_SLOTS) {
+			ItemStack stack = tableInventory.getItem(
+					BackpackModificationTableBlockEntity.PART_SLOT_START + slot);
+			if (stack.getItem() instanceof BackpackPartItem part && part.isModuleKind()) {
+				return stack;
+			}
+		}
+		return ItemStack.EMPTY;
+	}
+
 	private int partSlot(BackpackPartItem.Kind kind) {
+		if (kind == BackpackPartItem.Kind.MISSILE_BOX
+				|| kind == BackpackPartItem.Kind.GOLEM_CAPSULE) {
+			for (int slot : MODULE_PART_SLOTS) {
+				ItemStack stack = tableInventory.getItem(
+						BackpackModificationTableBlockEntity.PART_SLOT_START + slot);
+				if (stack.getItem() instanceof BackpackPartItem part && part.kind() == kind) {
+					return slot;
+				}
+			}
+			return -1;
+		}
 		ItemStack stack = tableInventory.getItem(
 				BackpackModificationTableBlockEntity.PART_SLOT_START + fixedSlot(kind));
 		return stack.getItem() instanceof BackpackPartItem part && part.kind() == kind
@@ -449,7 +478,7 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 							|| kind == BackpackPartItem.Kind.SUMMON_ANTENNA
 							|| kind == BackpackPartItem.Kind.BATTLE_BANNER
 							|| kind == BackpackPartItem.Kind.JUMP_THRUSTER;
-			case MISSILE_PART_SLOT -> kind == BackpackPartItem.Kind.MISSILE_BOX
+			case 2, MISSILE_PART_SLOT -> kind == BackpackPartItem.Kind.MISSILE_BOX
 					|| kind == BackpackPartItem.Kind.GOLEM_CAPSULE;
 			default -> false;
 		};
@@ -457,7 +486,7 @@ public final class BackpackModificationTableScreenHandler extends AbstractContai
 
 	/** 第三格附加模块必须与已装发射器匹配：跳跃推进器→导弹舱，召唤天线→魔像空投舱。 */
 	private boolean upgradeSlotAccepts(int slot, BackpackPartItem.Kind kind) {
-		if (slot != MISSILE_PART_SLOT) {
+		if (slot != 2 && slot != MISSILE_PART_SLOT) {
 			return true;
 		}
 		return switch (kind) {

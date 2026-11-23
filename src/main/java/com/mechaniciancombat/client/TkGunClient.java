@@ -47,6 +47,8 @@ public final class TkGunClient {
     private static boolean jumpSkillKeyDown = false;
     private static boolean meleeAttackDown = false;
 	private static boolean backpackActionDown = false;
+	/** 背包动作键与翻滚键撞键时只提示一次。 */
+	private static boolean backpackRollConflictLogged = false;
 	/** 灵魂锚：冲刺键按住 / 潜行键上一 tick 状态。 */
 	private static boolean soulAnchorKeyDown = false;
 	private static boolean soulAnchorSneakDown = false;
@@ -91,6 +93,16 @@ public final class TkGunClient {
 	}
 
 	private static boolean readRollKeyDown(Minecraft client) {
+		// X 是背包功能键。若玩家把翻滚也绑到同一个键，必须让背包优先：
+		// 背包没有可用功能时 X 应该完全无事发生，而不是退回成一次“特殊翻滚”。
+		if (isBackpackRollConflict(client)) {
+			if (!backpackRollConflictLogged) {
+				backpackRollConflictLogged = true;
+				TkGun.LOGGER.info("[tkgun] 背包功能键与翻滚键相同（{}），翻滚已让位给背包功能",
+						bindingKey(BACKPACK_ACTION_KEY, GLFW.GLFW_KEY_X).getDisplayName().getString());
+			}
+			return false;
+		}
 		if (!CombatRollHook.isInstalled()) {
 			return fallbackRollKey != null && client.screen == null
 					&& fallbackRollKey.isDown();
@@ -109,6 +121,35 @@ public final class TkGunClient {
 					&& InputConstants.isKeyDown(client.getWindow().getWindow(), code);
 		} catch (Throwable ignored) {
 			return false;
+		}
+	}
+
+	/** 当前翻滚键是否与背包功能键是同一个物理按键。 */
+	public static boolean isBackpackRollConflict() {
+		return isBackpackRollConflict(Minecraft.getInstance());
+	}
+
+	private static boolean isBackpackRollConflict(Minecraft client) {
+		InputConstants.Key backpack = bindingKey(BACKPACK_ACTION_KEY, GLFW.GLFW_KEY_X);
+		InputConstants.Key roll;
+		if (CombatRollHook.isInstalled()) {
+			if (rollKey == null) {
+				rollKey = findCombatRollKey(client);
+			}
+			roll = rollKey == null ? null : keyOf(rollKey);
+		} else {
+			roll = fallbackRollKey == null ? null : keyOf(fallbackRollKey);
+		}
+		return roll != null && roll.equals(backpack);
+	}
+
+	private static InputConstants.Key keyOf(KeyMapping binding) {
+		try {
+			InputConstants.Key key = InputConstants.getKey(binding.saveString());
+			return key.getType() == InputConstants.Type.KEYSYM
+					|| key.getType() == InputConstants.Type.MOUSE ? key : null;
+		} catch (Throwable ignored) {
+			return null;
 		}
 	}
 
@@ -1208,7 +1249,10 @@ public final class TkGunClient {
 					CombatBackpackClientState.sendMissileAction(client.player, true);
 				}
 			} else if (backpackActionRaw && !backpackActionDown
-					&& com.mechaniciancombat.item.BackpackUpgradeData.canUseLauncher(backpack)) {
+					&& com.mechaniciancombat.item.BackpackUpgradeData.canUseLauncher(backpack)
+					&& com.mechaniciancombat.item.BackpackUpgradeData.launcherType(backpack)
+					!= com.mechaniciancombat.item.BackpackUpgradeData.LauncherType.JUMP_THRUSTER) {
+				// 跳跃推进器由跳跃键使用；X 不应再触发一次“发射器动作”。
 				CombatBackpackClientState.trigger(client.player);
 			}
 		}

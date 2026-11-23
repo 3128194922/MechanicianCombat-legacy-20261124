@@ -1162,6 +1162,13 @@ public class TkGunServer {
 			toggleAutoBackpack(player, state, payload, now);
 			return;
 		}
+		if (state.launcherType
+				== com.mechaniciancombat.item.BackpackUpgradeData.LauncherType.JUMP_THRUSTER) {
+			// 跳跃推进器由跳跃键驱动；X 没有额外动作，避免落到便携发射器的锁定/发射分支。
+			syncBackpackStatus(player, state, now);
+			sendBackpackFireResult(player);
+			return;
+		}
 		if (com.mechaniciancombat.item.BackpackLauncherRules.isTridentLike(
 				player.getItemInHand(InteractionHand.OFF_HAND))) {
 			if (state.charges <= 0) {

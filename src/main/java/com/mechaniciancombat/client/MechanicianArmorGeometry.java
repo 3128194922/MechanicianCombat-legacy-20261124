@@ -79,8 +79,16 @@ public final class MechanicianArmorGeometry {
 								 HumanoidModel<?> baseModel, int light,
 								 LivingEntity entity, float limbAngle,
 								 float limbDistance, float headYaw) {
-		render(piece, matrices, consumers, baseModel, light, entity, limbAngle,
-				limbDistance, headYaw, EnumSet.allOf(Feature.class));
+		Geometry geometry = get(piece);
+		for (Part part : Part.values()) {
+			// 底衣只替换头部以下的作者几何；头部继续使用原版皮肤和头盔层。
+			if (piece == MechanicianArmorPiece.UNDERSUIT && part == Part.HEAD) {
+				continue;
+			}
+			renderPart(geometry, part, matrices, consumers, baseModel, light,
+					entity, limbAngle, limbDistance, headYaw,
+					EnumSet.allOf(Feature.class), null);
+		}
 	}
 
 	public static void render(MechanicianArmorPiece piece, PoseStack matrices,
@@ -106,7 +114,8 @@ public final class MechanicianArmorGeometry {
 			ItemStack ownerStack = feature == Feature.T1 && entity instanceof Player player
 					? player.getItemBySlot(EquipmentSlot.LEGS) : stack;
 			boolean hasPart = ArmorUpgradeData.hasPart(ownerStack, kind);
-			if (entity == Minecraft.getInstance().player) {
+			if (!hasPart && entity == Minecraft.getInstance().player) {
+				// 本地玩家优先读取服务端同步的权威状态；物品 NBT 可能比状态包晚到一帧。
 				hasPart = switch (feature) {
 					case C1 -> ArmorAbilityClientState.totemInstalled();
 					case C2 -> ArmorAbilityClientState.shieldInstalled();

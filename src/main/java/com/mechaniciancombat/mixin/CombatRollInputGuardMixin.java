@@ -21,6 +21,12 @@ public abstract class CombatRollInputGuardMixin {
 	@Inject(method = "isRollAvailable", remap = false, at = @At("HEAD"), cancellable = true)
 	private void tkgun$guardDodgeSequence(Player player,
 										  CallbackInfoReturnable<Boolean> cir) {
+		// 背包功能键与翻滚键撞键时，X 只负责背包功能；没有背包功能就不发生任何事。
+		if (player instanceof LocalPlayer
+				&& com.mechaniciancombat.client.TkGunClient.isBackpackRollConflict()) {
+			cir.setReturnValue(false);
+			return;
+		}
 		if (player instanceof LocalPlayer && (TkGun.holdingGun(player)
 				|| com.mechaniciancombat.item.MechanicianUndersuitItem.canUseArmorDodge(player))
 				&& GunClientState.combatRollSuppressed(player.getId())) {

@@ -64,8 +64,10 @@ public final class CombatBackpackClientState {
 		if (player == null) {
 			return;
 		}
-		if (!BackpackUpgradeData.canUseLauncher(
-				CombatBackpackItem.equippedStack(player))) {
+		net.minecraft.world.item.ItemStack backpack = CombatBackpackItem.equippedStack(player);
+		if (!BackpackUpgradeData.canUseLauncher(backpack)
+				|| BackpackUpgradeData.launcherType(backpack)
+				== BackpackUpgradeData.LauncherType.JUMP_THRUSTER) {
 			return;
 		}
 		Entry entry = ENTRIES.computeIfAbsent(player.getId(), ignored -> new Entry());

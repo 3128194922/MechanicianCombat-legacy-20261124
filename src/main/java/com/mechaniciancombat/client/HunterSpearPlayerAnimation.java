@@ -1,140 +1,214 @@
 package com.mechaniciancombat.client;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.mechaniciancombat.TkGun;
 import dev.kosmx.playerAnim.api.TransformType;
-import dev.kosmx.playerAnim.api.firstPerson.FirstPersonConfiguration;
-import dev.kosmx.playerAnim.api.firstPerson.FirstPersonMode;
 import dev.kosmx.playerAnim.api.layered.IAnimation;
-import dev.kosmx.playerAnim.api.layered.KeyframeAnimationPlayer;
-import dev.kosmx.playerAnim.api.layered.ModifierLayer;
-import dev.kosmx.playerAnim.core.data.KeyframeAnimation;
 import dev.kosmx.playerAnim.core.util.Vec3f;
 import dev.kosmx.playerAnim.minecraftApi.PlayerAnimationAccess;
-import dev.kosmx.playerAnim.minecraftApi.PlayerAnimationRegistry;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.resources.ResourceLocation;
 
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
  * 猎矛部署时的上半身 PlayerAnimator 动画。
  *
- * <p>使用 PlayerAnimator 原生动画层，让库自己完成原版玩家模型的枢轴、坐标和手臂空间转换；
- * 不再手动采样 JSON 后直接写玩家手臂骨骼。
+ * <p>作者给出的 `player_animations/hunter_spear_deploy.json` 是 Blockbench/GeckoLib
+ * 的 `animations -> bones` 结构，PlayerAnimator 自带的 `PlayerAnimationRegistry`
+ * 只识别 Emotecraft 的 `emote/moves` 结构，直接注册会得到空动画。这里与战旗、
+ * 跳跃推进器保持一致，手动解析作者 JSON，再把骨骼通道交给 PlayerAnimator。
  */
-public final class HunterSpearPlayerAnimation {
+public final class HunterSpearPlayerAnimation implements IAnimation {
     private static final int LAYER_PRIORITY = 27;
-    private static final ResourceLocation CLIP = TkGun.id("hunter_spear_deploy");
-    private static final Map<UUID, ModifierLayer<IAnimation>> LAYERS = new HashMap<>();
-    private static final Set<UUID> ACTIVE = new HashSet<>();
+    private static final ResourceLocation CLIP =
+            TkGun.id("player_animations/hunter_spear_deploy.json");
+    private static final String CLIP_NAME = "hunter_spear_deploy";
+    private static Map<String, BoneChannels> channels;
 
-    public static void register() {
-        PlayerAnimationAccess.REGISTER_ANIMATION_EVENT.register((player, stack) -> {
-            ModifierLayer<IAnimation> layer = new ModifierLayer<>();
-            stack.addAnimLayer(LAYER_PRIORITY, layer);
-            LAYERS.put(player.getUUID(), layer);
-            ACTIVE.remove(player.getUUID());
-        });
+    private final AbstractClientPlayer player;
+
+    private HunterSpearPlayerAnimation(AbstractClientPlayer player) {
+        this.player = player;
     }
 
+    public static void register() {
+        PlayerAnimationAccess.REGISTER_ANIMATION_EVENT.register((player, stack) ->
+                stack.addAnimLayer(LAYER_PRIORITY, new HunterSpearPlayerAnimation(player)));
+    }
+
+    /** 播放由 HunterSpearSkillClientState 的计时驱动；这里只确保资源已解析。 */
     public static void play(AbstractClientPlayer player) {
-        UUID uuid = player.getUUID();
-        if (ACTIVE.contains(uuid)) {
-            return;
+        if (player != null) {
+            channels();
         }
-        ModifierLayer<IAnimation> layer = layerFor(player);
-        KeyframeAnimation animation = PlayerAnimationRegistry.getAnimation(CLIP);
-        if (layer == null || animation == null) {
-            TkGun.LOGGER.warn("[tkgun] 猎矛部署 PlayerAnimator 片段缺失：{}", CLIP);
-            return;
-        }
-        layer.setAnimation(new HoldAnimation(new KeyframeAnimationPlayer(animation)));
-        ACTIVE.add(uuid);
     }
 
     public static void clear(UUID uuid) {
-        ModifierLayer<IAnimation> layer = LAYERS.get(uuid);
-        if (layer != null) {
-            layer.setAnimation(null);
-        }
-        ACTIVE.remove(uuid);
+        // 动画是否生效由 HunterSpearSkillClientState 判断，不需要手动摘层。
     }
 
     public static void clearAll() {
-        for (ModifierLayer<IAnimation> layer : LAYERS.values()) {
-            layer.setAnimation(null);
-        }
-        LAYERS.clear();
-        ACTIVE.clear();
+        channels = null;
     }
 
-    private static ModifierLayer<IAnimation> layerFor(AbstractClientPlayer player) {
-        ModifierLayer<IAnimation> layer = LAYERS.get(player.getUUID());
-        if (layer != null) {
-            return layer;
+    @Override
+    public boolean isActive() {
+        return player != null && player.isAlive()
+                && HunterSpearSkillClientState.isActive(player.getId());
+    }
+
+    @Override
+    public Vec3f get3DTransform(String part, TransformType type,
+                                float tickDelta, Vec3f fallback) {
+        if (!isActive()) {
+            return fallback;
         }
-        try {
-            layer = new ModifierLayer<>();
-            PlayerAnimationAccess.getPlayerAnimLayer(player).addAnimLayer(LAYER_PRIORITY, layer);
-            LAYERS.put(player.getUUID(), layer);
-            return layer;
-        } catch (RuntimeException exception) {
+        String bone = switch (part) {
+            case "torso" -> "torso";
+            case "rightArm" -> "rightArm";
+            case "leftArm" -> "leftArm";
+            default -> null;
+        };
+        if (bone == null) {
+            return fallback;
+        }
+        double seconds = HunterSpearSkillClientState.animationSeconds(
+                player.getId(), player.level().getGameTime(), tickDelta);
+        BoneChannels boneChannels = channels().get(bone);
+        if (boneChannels == null) {
+            return fallback;
+        }
+        if (type == TransformType.ROTATION) {
+            Vec3 rotation = sample(boneChannels.rotation(), seconds);
+            return rotation == null ? fallback
+                    : new Vec3f((float) Math.toRadians(rotation.x()),
+                    (float) Math.toRadians(rotation.y()),
+                    (float) Math.toRadians(rotation.z()));
+        }
+        if (type == TransformType.POSITION) {
+            Vec3 position = sample(boneChannels.position(), seconds);
+            return position == null ? fallback
+                    : new Vec3f(position.x(), position.y(), position.z());
+        }
+        return fallback;
+    }
+
+    @Override
+    public void setupAnim(float tickDelta) {
+    }
+
+    private static Map<String, BoneChannels> channels() {
+        Map<String, BoneChannels> cached = channels;
+        if (cached != null) {
+            return cached;
+        }
+        Map<String, BoneChannels> loaded = new HashMap<>();
+        try (var resource = Minecraft.getInstance().getResourceManager().getResource(CLIP)
+                .orElseThrow().open();
+             var reader = new InputStreamReader(resource, StandardCharsets.UTF_8)) {
+            JsonObject animations = JsonParser.parseReader(reader).getAsJsonObject()
+                    .getAsJsonObject("animations");
+            JsonObject clip = animations.getAsJsonObject(CLIP_NAME);
+            if (clip != null && clip.has("bones")) {
+                JsonObject bones = clip.getAsJsonObject("bones");
+                for (String boneName : bones.keySet()) {
+                    JsonObject bone = bones.getAsJsonObject(boneName);
+                    loaded.put(boneName, new BoneChannels(
+                            channel(bone.get("rotation")),
+                            channel(bone.get("position"))));
+                }
+            }
+        } catch (Exception exception) {
+            TkGun.LOGGER.warn("[tkgun] 猎矛部署 PlayerAnimator 片段读取失败：{}", CLIP, exception);
+        }
+        channels = Map.copyOf(loaded);
+        return channels;
+    }
+
+    private static TreeMap<Double, Vec3> channel(JsonElement source) {
+        if (source == null) {
             return null;
         }
-    }
-
-    private static final class HoldAnimation implements IAnimation {
-        private final KeyframeAnimationPlayer animation;
-        private boolean running = true;
-
-        private HoldAnimation(KeyframeAnimationPlayer animation) {
-            this.animation = animation;
+        TreeMap<Double, Vec3> frames = new TreeMap<>();
+        if (source.isJsonArray()) {
+            Vec3 constant = vector(source);
+            if (constant != null) {
+                frames.put(0.0D, constant);
+                return frames;
+            }
+            return null;
         }
-
-        @Override
-        public void tick() {
-            if (running && animation.isActive()) {
-                animation.tick();
-            } else {
-                running = false;
+        if (!source.isJsonObject()) {
+            return null;
+        }
+        for (var frame : source.getAsJsonObject().entrySet()) {
+            JsonElement value = frame.getValue();
+            if (value.isJsonObject()) {
+                JsonObject object = value.getAsJsonObject();
+                if (object.has("post")) {
+                    value = object.get("post");
+                } else if (object.has("vector")) {
+                    value = object.get("vector");
+                }
+            }
+            Vec3 vector = vector(value);
+            if (vector != null) {
+                try {
+                    frames.put(Double.parseDouble(frame.getKey()), vector);
+                } catch (NumberFormatException ignored) {
+                    // 通道里偶尔会有非数字键（作者备注），跳过即可。
+                }
             }
         }
-
-        @Override
-        public boolean isActive() {
-            return true;
-        }
-
-        @Override
-        public Vec3f get3DTransform(String part, TransformType type,
-                                    float tickDelta, Vec3f fallback) {
-            if (!"torso".equals(part) && !"rightArm".equals(part)
-                    && !"leftArm".equals(part)) {
-                return fallback;
-            }
-            return animation.get3DTransform(part, type, tickDelta, fallback);
-        }
-
-        @Override
-        public void setupAnim(float tickDelta) {
-            animation.setupAnim(tickDelta);
-        }
-
-        @Override
-        public FirstPersonMode getFirstPersonMode(float tickDelta) {
-            return animation.getFirstPersonMode(tickDelta);
-        }
-
-        @Override
-        public FirstPersonConfiguration getFirstPersonConfiguration(float tickDelta) {
-            return animation.getFirstPersonConfiguration(tickDelta);
-        }
+        return frames.isEmpty() ? null : frames;
     }
 
-    private HunterSpearPlayerAnimation() {
+    private static Vec3 vector(JsonElement value) {
+        if (value == null || !value.isJsonArray() || value.getAsJsonArray().size() != 3) {
+            return null;
+        }
+        return new Vec3(value.getAsJsonArray().get(0).getAsFloat(),
+                value.getAsJsonArray().get(1).getAsFloat(),
+                value.getAsJsonArray().get(2).getAsFloat());
     }
+
+    private static Vec3 sample(TreeMap<Double, Vec3> frames, double seconds) {
+        if (frames == null || frames.isEmpty()) {
+            return null;
+        }
+        var first = frames.firstEntry();
+        var last = frames.lastEntry();
+        if (seconds <= first.getKey()) {
+            return first.getValue();
+        }
+        if (seconds >= last.getKey()) {
+            return last.getValue();
+        }
+        var before = frames.floorEntry(seconds);
+        var after = frames.ceilingEntry(seconds);
+        double span = after.getKey() - before.getKey();
+        float t = span <= 1.0E-8D ? 1.0F : (float) ((seconds - before.getKey()) / span);
+        Vec3 a = before.getValue();
+        Vec3 b = after.getValue();
+        return new Vec3(a.x() + (b.x() - a.x()) * t,
+                a.y() + (b.y() - a.y()) * t,
+                a.z() + (b.z() - a.z()) * t);
+    }
+
+    private record BoneChannels(TreeMap<Double, Vec3> rotation,
+                                TreeMap<Double, Vec3> position) {
+    }
+
+    private record Vec3(float x, float y, float z) {
+    }
+
 }

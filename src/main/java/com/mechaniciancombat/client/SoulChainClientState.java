@@ -14,11 +14,12 @@ public final class SoulChainClientState {
 
 	public record Effect(List<Node> nodes, long expiresAt, long startedAt) {
 		public float alphaAt(long now) {
-			long elapsed = Math.max(0L, now - startedAt);
-			if (elapsed <= 10L) {
+			// 链接持续期间保持完整可见；只在最后 5 tick 快速淡出。
+			long remaining = expiresAt - now;
+			if (remaining > 5L) {
 				return 1.0F;
 			}
-			return Math.max(0.0F, 1.0F - (elapsed - 10L) / 20.0F);
+			return Math.max(0.0F, remaining / 5.0F);
 		}
 	}
 

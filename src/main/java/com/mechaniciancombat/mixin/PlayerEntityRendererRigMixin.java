@@ -69,6 +69,15 @@ public abstract class PlayerEntityRendererRigMixin {
         com.mechaniciancombat.client.MechanicianArmorGeometry.render(
                 com.mechaniciancombat.item.MechanicianArmorPiece.UNDERSUIT, pose, buffers, model, light,
                 player, 0, 0, 0, part);
+        // 第一人称只画手，但盔甲模块（C2 肩甲、C3 锁链）也装在同一条手臂上；
+        // 补画胸甲手臂几何，否则这些模块只在第三人称可见。
+        var chest = player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.CHEST);
+        if (chest.getItem() instanceof com.mechaniciancombat.item.MechanicianArmorItem armor
+                && armor.piece() == com.mechaniciancombat.item.MechanicianArmorPiece.CHESTPLATE) {
+            com.mechaniciancombat.client.MechanicianArmorGeometry.render(
+                    com.mechaniciancombat.item.MechanicianArmorPiece.CHESTPLATE, chest,
+                    pose, buffers, model, light, player, 0, 0, 0, part);
+        }
         ci.cancel();
     }
 

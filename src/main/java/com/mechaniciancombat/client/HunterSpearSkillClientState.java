@@ -49,7 +49,7 @@ public final class HunterSpearSkillClientState {
     public static double animationSeconds(int playerId, long now, float partialTick) {
         Entry entry = ENTRIES.get(playerId);
         if (entry == null) return 0.0D;
-        return Math.max(0.0D, Math.min(1.125D,
+        return Math.max(0.0D, Math.min(1.15D,
                 (now - entry.startedAt() + partialTick) / 20.0D));
     }
 

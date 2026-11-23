@@ -200,6 +200,82 @@ public final class Module3And4GameTests {
 		helper.succeed();
 	}
 
+	@GameTest(template = "empty", timeoutTicks = 40)
+	public static void backpackTableInstallsCoreLauncherAndModule(GameTestHelper helper) throws Exception {
+		FakePlayer player = player(helper, "backpack_core_install");
+		com.mechaniciancombat.screen.BackpackModificationTableScreenHandler menu =
+				new com.mechaniciancombat.screen.BackpackModificationTableScreenHandler(
+						0, player.getInventory(), BlockPos.ZERO);
+		var sync = com.mechaniciancombat.screen.BackpackModificationTableScreenHandler.class
+				.getDeclaredMethod("syncTableState");
+		sync.setAccessible(true);
+		menu.getSlot(0).set(new ItemStack(ModRegistries.COMBAT_BACKPACK.get()));
+		sync.invoke(menu);
+
+		menu.getSlot(1).set(new ItemStack(ModRegistries.BACKPACK_CORE.get()));
+		sync.invoke(menu);
+		ItemStack backpack = menu.getSlot(0).getItem();
+		helper.assertTrue(com.mechaniciancombat.item.BackpackUpgradeData.hasCore(backpack),
+				"backpack table must install the core");
+
+		menu.getSlot(2).set(new ItemStack(ModRegistries.JUMP_BACKPACK_THRUSTER.get()));
+		sync.invoke(menu);
+		helper.assertTrue(com.mechaniciancombat.item.BackpackUpgradeData.canUseLauncher(backpack)
+						&& com.mechaniciancombat.item.BackpackUpgradeData.launcherType(backpack)
+						== com.mechaniciancombat.item.BackpackUpgradeData.LauncherType.JUMP_THRUSTER,
+				"core must allow the jump thruster to be installed");
+
+		menu.getSlot(4).set(new ItemStack(ModRegistries.MISSILE_BOX.get()));
+		sync.invoke(menu);
+		helper.assertTrue(com.mechaniciancombat.item.BackpackUpgradeData.hasMissileBox(backpack)
+						&& com.mechaniciancombat.item.BackpackUpgradeData.canUseMissileBox(backpack),
+				"jump thruster must allow the missile box extension");
+		helper.assertTrue(menu.getSlot(3).mayPlace(
+						new ItemStack(ModRegistries.MISSILE_BOX.get())),
+				"both lower module slots must accept the missile box");
+		helper.succeed();
+	}
+
+	@GameTest(template = "empty", timeoutTicks = 60)
+	public static void soulChainLinkTransfersDamageWhileActive(GameTestHelper helper) {
+		FakePlayer player = player(helper, "soul_chain_link");
+		ItemStack chest = new ItemStack(ModRegistries.MECHANICIAN_CHESTPLATE.get());
+		ArmorUpgradeData.setStoredPart(chest, ArmorPartItem.Kind.C3,
+				new ItemStack(ModRegistries.SOUL_CHAIN.get()));
+		player.setItemSlot(EquipmentSlot.CHEST, chest);
+
+		net.minecraft.world.entity.monster.Zombie first =
+				net.minecraft.world.entity.EntityType.ZOMBIE.create(helper.getLevel());
+		net.minecraft.world.entity.monster.Zombie second =
+				net.minecraft.world.entity.EntityType.ZOMBIE.create(helper.getLevel());
+		helper.assertTrue(first != null && second != null, "zombies must be creatable");
+		first.moveTo(player.getX() + 1.0D, player.getY(), player.getZ());
+		second.moveTo(player.getX() + 2.0D, player.getY(), player.getZ());
+		first.setNoAi(true);
+		second.setNoAi(true);
+		first.setHealth(20.0F);
+		second.setHealth(20.0F);
+		helper.getLevel().addFreshEntity(first);
+		helper.getLevel().addFreshEntity(second);
+		com.mechaniciancombat.SoulAnchorMarks.mark(first, player);
+
+		first.invulnerableTime = 0;
+		second.invulnerableTime = 0;
+		first.hurt(player.damageSources().playerAttack(player), 10.0F);
+		helper.assertTrue(second.getHealth() < 20.0F,
+				"starting chain hit must transfer damage to the linked target");
+
+		float firstHealth = first.getHealth();
+		first.invulnerableTime = 0;
+		second.invulnerableTime = 0;
+		second.hurt(player.damageSources().playerAttack(player), 4.0F);
+		helper.assertTrue(first.getHealth() < firstHealth,
+				"damage taken by a linked target must transfer back while the link is active");
+		helper.assertTrue(com.mechaniciancombat.SoulChainAbility.LINK_TICKS == 100,
+				"soul chain link must last 5 seconds");
+		helper.succeed();
+	}
+
 	@GameTest(template = "empty", timeoutTicks = 20)
 	public static void recipeEditorBuildsAuthoredJson(GameTestHelper helper) throws Exception {
 		FakePlayer player = player(helper, "recipe_json");
