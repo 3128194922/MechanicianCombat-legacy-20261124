@@ -3,6 +3,8 @@ package com.mechaniciancombat.client;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.kosmx.playerAnim.core.data.KeyframeAnimation;
+import dev.kosmx.playerAnim.core.data.gson.AnimationSerializing;
 
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -24,6 +26,7 @@ public final class HunterSpearAssetContract {
                 new String[]{"skill_flag"});
         checkAnimation("/assets/tkgun/player_animations/hunter_spear_deploy.json",
                 null, new String[]{"hunter_spear_deploy"});
+        checkPlayerAnimation();
         // 第一人称（相机空间）猎矛：缺了它部署时第一人称会看不到枪。
         checkAnimation("/assets/tkgun/animations/entity/hunter_anchor_fpa.animation.json",
                 "/assets/tkgun/geo/entity/hunter_anchor_fpa.geo.json",
@@ -64,6 +67,38 @@ public final class HunterSpearAssetContract {
                 if (!bones.contains(bone)) {
                     throw new AssertionError(name + " references unknown bone " + bone
                             + " in " + animationPath);
+                }
+            }
+        }
+    }
+
+    /**
+     * PlayerAnimator 必须能把作者片段解析成原生动画数据。
+     *
+     * <p>这条路径同时覆盖 GeckoLib 的坐标转换；只剩物品动画通常就是这里失效。
+     */
+    private static void checkPlayerAnimation() throws Exception {
+        try (var stream = HunterSpearAssetContract.class.getResourceAsStream(
+                "/assets/tkgun/player_animations/hunter_spear_deploy.json")) {
+            if (stream == null) {
+                throw new AssertionError("missing player animation");
+            }
+            KeyframeAnimation clip = null;
+            for (KeyframeAnimation animation : AnimationSerializing.deserializeAnimation(stream)) {
+                if ("hunter_spear_deploy".equals(animation.extraData.get("name"))) {
+                    clip = animation;
+                    break;
+                }
+            }
+            if (clip == null) {
+                throw new AssertionError("PlayerAnimator could not read hunter_spear_deploy");
+            }
+            if (clip.endTick != 23) {
+                throw new AssertionError("hunter_spear_deploy length changed: " + clip.endTick);
+            }
+            for (String part : new String[]{"torso", "rightArm", "leftArm"}) {
+                if (clip.getPartOptional(part).isEmpty()) {
+                    throw new AssertionError("hunter_spear_deploy missing part: " + part);
                 }
             }
         }
